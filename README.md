@@ -496,36 +496,44 @@ Provide docs:
 - Integration test uses `TestRestTemplate` against random port.
 - Verifies endpoint responds.
 
-## STEP H — Auto-Generated Domain Unit Tests (JUnit + Lombok REQUIRED)
+---
 
-This step defines **mandatory JUnit tests** that must be generated **for every auto-generated domain (DTO) class** derived from the COBOL copybooks.
+## STEP H — Auto-Generated Domain Unit Tests (JUnit 5 + Lombok REQUIRED)
 
-The purpose is to guarantee:
+This step defines **mandatory JUnit tests** that must be **auto-generated for every domain class** derived from COBOL COPYBOOKs.
+
+The objective is to guarantee:
 - correctness of Lombok-generated behavior
 - enforcement of Jakarta Validation constraints
-- correctness of enum handling (88-level fields)
-- correctness of serialization/deserialization round-trips
-- correctness of derived/combined fields (e.g., `LocalDate`)
+- correctness of 88-level enum handling
+- correctness of serialization and deserialization
+- correctness of derived and combined fields (e.g., `LocalDate`)
+
+All generated domain tests must run with **no manual modification**.
 
 ---
 
-## Lombok Requirements (NON-NEGOTIABLE)
+## STEP H1 — Lombok Requirements (NON-NEGOTIABLE)
 
-### H1. Lombok usage rules
-All generated domain classes **must**:
+### H1.1 Lombok usage rules
 
-- Use Lombok annotations instead of manual boilerplate:
-  - `@Data` **or** (`@Getter`, `@Setter`, `@EqualsAndHashCode`, `@ToString`)
-  - `@NoArgsConstructor`
-  - `@AllArgsConstructor` (where appropriate)
-  - `@Builder` (required for test readability)
-- Never manually implement:
-  - getters/setters
-  - equals/hashCode
-  - toString
+All generated domain classes **MUST** use Lombok and **MUST NOT** contain handwritten boilerplate.
 
-Lombok dependency **must be included** as:
-- `compileOnly` + `annotationProcessor`
+Required Lombok annotations:
+- `@Data` **OR** (`@Getter`, `@Setter`, `@EqualsAndHashCode`, `@ToString`)
+- `@NoArgsConstructor`
+- `@AllArgsConstructor` (where applicable)
+- `@Builder` (**MANDATORY** for test readability)
+
+Manual implementation of the following is **PROHIBITED**:
+- getters / setters
+- `equals()`
+- `hashCode()`
+- `toString()`
+
+### H1.2 Lombok dependency
+
+The generated project **MUST** include Lombok configured as follows:
 
 ```xml
 <dependency>
@@ -534,6 +542,199 @@ Lombok dependency **must be included** as:
   <scope>provided</scope>
 </dependency>
 ```
+
+## STEP H2 — Domain Test Class Generation
+
+For **every auto-generated domain class** (request and response), the generator **MUST** generate a corresponding JUnit 5 test class.
+
+### H2.1 Naming and location rules
+
+- Test classes MUST:
+  - Mirror the domain package structure
+  - Use the naming convention: `<DomainClassName>Test`
+- Test classes MUST be placed under:
+  - `src/test/java`
+
+Example:
+
+src/main/java/com/example/model/request/CustomerRequest.java
+src/test/java/com/example/model/request/CustomerRequestTest.java
+
+
+### H2.2 Test class scope
+
+Each generated test class MUST validate:
+- Lombok-generated behavior
+- Jakarta Validation constraints
+- Serialization and deserialization correctness
+- Enum (88-level) behavior
+- Derived / combined field behavior (if applicable)
+
+---
+
+## STEP H3 — Lombok Behavior Verification
+
+Each domain test class MUST include tests that verify Lombok-generated functionality.
+
+### H3.1 Required Lombok tests
+
+The following tests are REQUIRED for every domain:
+
+1. Builder creates equivalent objects
+2. `equals()` and `hashCode()` are consistent
+3. `toString()` executes without throwing exceptions
+
+### H3.2 Lombok verification criteria
+
+- All Lombok-generated fields MUST be exercised
+- Equality MUST be based on field values
+- No Lombok-generated method may be overridden manually
+
+### H3.3 Validation
+
+- Tests MUST compile without warnings
+- Lombok annotations MUST be present on all domain classes
+- Test execution MUST confirm Lombok correctness
+
+---
+
+## STEP H4 — Jakarta Validation Constraint Tests
+
+Each domain test class MUST include tests that validate Jakarta Bean Validation constraints derived from the COPYBOOK.
+
+### H4.1 Validator setup requirements
+
+- Tests MUST use:
+  - `jakarta.validation.Validator`
+  - `Validation.buildDefaultValidatorFactory()`
+- Spring context MUST NOT be used
+
+### H4.2 Required validation scenarios
+
+For each constraint generated from the copybook, a corresponding failing test MUST exist.
+
+| Copybook Constraint | Required Test Condition |
+|--------------------|-------------------------|
+| `PIC X(n)` | String length > n fails |
+| `PIC 9(n)` | Excess digits fail |
+| `PIC 9(n)V9(m)` | Excess fractional digits fail |
+| `OCCURS n TIMES` | Collection size > n fails |
+| Required field | `null` value fails |
+| Nested group | Child violation propagates |
+| 88-level enum | Invalid value fails |
+
+### H4.3 Validation assertions
+
+Tests MUST assert:
+- Violation count
+- Violated property path
+- Constraint message (where deterministic)
+
+---
+
+## STEP H5 — Enum (88-Level) Domain Tests
+
+For every enum generated from 88-level COPYBOOK fields, the following tests are REQUIRED.
+
+### H5.1 Enum mapping tests
+
+- COBOL raw value maps to enum
+- Enum maps back to COBOL raw value
+
+### H5.2 Invalid enum handling
+
+- Invalid raw value MUST:
+  - throw a deterministic exception, OR
+  - be rejected during validation
+
+The chosen strategy MUST be consistent across all enums.
+
+### H5.3 Validation
+
+- All enum constants MUST be exercised
+- Mapping logic MUST be reversible
+
+---
+
+## STEP H6 — Serialization and Deserialization Tests
+
+Each domain test class MUST include serialization tests.
+
+### H6.1 Required serialization tests
+
+1. Domain object serializes to `byte[]`
+2. Serialized bytes deserialize back into domain object
+3. Deserialized object equals the original
+
+### H6.2 Byte-level assertions
+
+Tests MUST assert:
+- Byte array length equals copybook-derived layout length
+- Field ordering matches COPYBOOK definition
+- Serialization is deterministic
+
+---
+
+## STEP H7 — Derived and Combined Field Tests
+
+For domains containing derived or combined fields (e.g., `LocalDate`), the following tests are REQUIRED.
+
+### H7.1 Required derived-field tests
+
+1. Derived field serializes into correct raw fields
+2. Raw bytes deserialize into correct derived field
+3. Missing derived field fails validation
+
+### H7.2 Encapsulation rules
+
+- Raw component fields MUST NOT be publicly exposed
+- Derived field MUST be the single public representation
+
+---
+
+## STEP H8 — Domain Test Rules and Constraints
+
+All generated domain tests MUST:
+
+- Use JUnit 5
+- Avoid Mockito and Spring context
+- Be deterministic and repeatable
+- Use behavior-based test naming
+- Avoid hard-coded magic values unless derived from COPYBOOK metadata
+
+---
+
+## STEP H9 — Generator Enforcement Rules
+
+The generator MUST fail if:
+
+- Any domain class lacks a corresponding test class
+- Any Lombok annotation is missing
+- Any Jakarta Validation constraint lacks a test
+- Any serialization test fails
+- Any enum mapping test fails
+
+### H9.1 Enforcement mechanism
+
+The generator MUST:
+1. Execute `mvn -q test` on the generated project
+2. Surface missing test classes or failures explicitly
+3. Exit with non-zero status on failure
+
+---
+
+## Acceptance Criteria — Domain Testing
+
+The generated project is NOT complete unless:
+
+- Lombok is used for all domain boilerplate
+- Every domain has:
+  - Lombok behavior tests
+  - Validation tests
+  - Serialization tests
+- All 88-level enums are fully tested
+- All derived fields are validated and tested
+- All tests pass with no user intervention
 
 ---
 
