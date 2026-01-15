@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<launchConfiguration type="org.eclipse.jdt.launching.localJavaApplication">
+    <stringAttribute key="org.eclipse.jdt.launching.MAIN_TYPE" value="com.mainframe.generator.GeneratorApplication"/>
+    <stringAttribute key="org.eclipse.jdt.launching.MODULE_NAME" value="copybook-spring-camel-gen"/>
+    <stringAttribute key="org.eclipse.jdt.launching.PROJECT_ATTR" value="copybook-spring-camel-gen"/>
+    <stringAttribute key="org.eclipse.jdt.launching.PROGRAM_ARGUMENTS" value="--project-name CustomerInquiryAPI&#10;--copybook-dir ${project_loc}/sample-copybooks&#10;--mapping-doc ${project_loc}/sample-mapping/mapping.txt&#10;--program-id CUSTINQ&#10;--tcp-host localhost&#10;--tcp-port 5000&#10;--framing LENGTH_PREFIX_2&#10;--output-dir ${project_loc}/generated-projects&#10;--force&#10;--skip-tests"/>
+    <stringAttribute key="org.eclipse.jdt.launching.VM_ARGUMENTS" value=""/>
+    <stringAttribute key="org.eclipse.jdt.launching.WORKING_DIRECTORY" value="${project_loc}"/>
+    <booleanAttribute key="org.eclipse.jdt.launching.ATTR_USE_CLASSPATH_ONLY_JAR" value="false"/>
+    <booleanAttribute key="org.eclipse.jdt.launching.ATTR_USE_START_ON_FIRST_THREAD" value="true"/>
+</launchConfiguration>
