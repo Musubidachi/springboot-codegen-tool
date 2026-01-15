@@ -1,0 +1,34 @@
+# Sample Mapping Document for CUSTINQ Copybooks
+# ================================================
+# Format:
+#   Rename:  COBOL-NAME = JavaName
+#   Combine: FIELD1 + FIELD2 = CombinedName:JavaType
+#   Enum:    FIELD-NAME = EnumName:enum
+#   Ignore:  FIELD-NAME = IGNORE
+
+# Rename fields for better Java naming
+TRANSACTION-ID = transactionId
+CUSTOMER-ID = customerId
+CUSTOMER-NAME = customerName
+
+# Combine date fields into LocalDate
+REQUEST-YEAR + REQUEST-MONTH + REQUEST-DAY = requestDate:LocalDate
+OPEN-YEAR + OPEN-MONTH + OPEN-DAY = dateOpened:LocalDate
+LAST-ACT-YEAR + LAST-ACT-MONTH + LAST-ACT-DAY = lastActivityDate:LocalDate
+
+# Force enum generation
+SEARCH-TYPE = SearchType:enum
+STATUS-FILTER = StatusFilter:enum
+RESPONSE-CODE = ResponseCode:enum
+CUSTOMER-STATUS = CustomerStatus:enum
+CUSTOMER-TYPE = CustomerType:enum
+SORT-ORDER = SortOrder:enum
+
+# Ignore FILLER fields (already automatic, but explicit)
+FILLER = IGNORE
+
+# Rename for clarity
+MIN-BALANCE = minimumBalance
+MAX-BALANCE = maximumBalance
+TOTAL-BALANCE = totalBalance
+CREDIT-LIMIT = creditLimit
