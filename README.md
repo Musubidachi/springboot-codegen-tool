@@ -496,6 +496,45 @@ Provide docs:
 - Integration test uses `TestRestTemplate` against random port.
 - Verifies endpoint responds.
 
+## STEP H — Auto-Generated Domain Unit Tests (JUnit + Lombok REQUIRED)
+
+This step defines **mandatory JUnit tests** that must be generated **for every auto-generated domain (DTO) class** derived from the COBOL copybooks.
+
+The purpose is to guarantee:
+- correctness of Lombok-generated behavior
+- enforcement of Jakarta Validation constraints
+- correctness of enum handling (88-level fields)
+- correctness of serialization/deserialization round-trips
+- correctness of derived/combined fields (e.g., `LocalDate`)
+
+---
+
+## Lombok Requirements (NON-NEGOTIABLE)
+
+### H1. Lombok usage rules
+All generated domain classes **must**:
+
+- Use Lombok annotations instead of manual boilerplate:
+  - `@Data` **or** (`@Getter`, `@Setter`, `@EqualsAndHashCode`, `@ToString`)
+  - `@NoArgsConstructor`
+  - `@AllArgsConstructor` (where appropriate)
+  - `@Builder` (required for test readability)
+- Never manually implement:
+  - getters/setters
+  - equals/hashCode
+  - toString
+
+Lombok dependency **must be included** as:
+- `compileOnly` + `annotationProcessor`
+
+```xml
+<dependency>
+  <groupId>org.projectlombok</groupId>
+  <artifactId>lombok</artifactId>
+  <scope>provided</scope>
+</dependency>
+```
+
 ---
 
 # Generated Project Layout (Required)
