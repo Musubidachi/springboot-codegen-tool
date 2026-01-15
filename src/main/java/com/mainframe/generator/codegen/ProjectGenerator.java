@@ -438,6 +438,11 @@ public class ProjectGenerator {
                         toPascalCase(config.getProgramId()) + suffix + ".java"
         );
         
+        log.info("Generating DTO class: {} from copybook: {}", classFile.getFileName(), copybook.getName());
+        log.info("  Root group children count: {}", 
+                copybook.getRootGroup() != null ? copybook.getRootGroup().getChildren().size() : 0);
+        log.info("  Total fields in copybook: {}", copybook.getAllFields().size());
+        
         StringBuilder sb = new StringBuilder();
         
         // Package and imports
@@ -463,53 +468,43 @@ public class ProjectGenerator {
         sb.append("@Builder\n");
         sb.append("public class ").append(className).append(" {\n\n");
         
-        // Generate fields
-        generateFields(sb, copybook.getRootGroup(), "    ");
+        // Generate fields from all fields in the copybook (flattened)
+        for (FieldNode field : copybook.getAllFields()) {
+            if (field.isFiller() || mappingDoc.shouldIgnore(field.getName())) {
+                continue;
+            }
+            
+            log.debug("  Generating field: {} ({})", field.getName(), field.inferJavaType());
+            
+            // Generate validation annotations
+            var constraints = validationGenerator.generateConstraints(field, true);
+            for (var constraint : constraints) {
+                sb.append("    ").append(constraint.toAnnotation()).append("\n");
+            }
+            
+            // JsonProperty annotation for mapping
+            sb.append("    @JsonProperty(\"").append(field.toJavaFieldName()).append("\")\n");
+            
+            // Field declaration
+            String javaType = getJavaType(field);
+            String fieldName = getJavaFieldName(field);
+            
+            if (field.getOccursCount() > 1) {
+                sb.append("    @Builder.Default\n");
+                sb.append("    private List<").append(javaType).append("> ")
+                        .append(fieldName).append(" = new ArrayList<>();\n\n");
+            } else {
+                sb.append("    private ").append(javaType).append(" ")
+                        .append(fieldName).append(";\n\n");
+            }
+        }
         
         sb.append("}\n");
         
         Files.writeString(classFile, sb.toString());
-    }
-    
-    private void generateFields(StringBuilder sb, GroupNode group, String indent) {
-        for (CopybookNode child : group.getChildren()) {
-            if (child instanceof FieldNode field) {
-                if (field.isFiller() || mappingDoc.shouldIgnore(field.getName())) {
-                    continue;
-                }
-                
-                // Generate validation annotations
-                var constraints = validationGenerator.generateConstraints(field, true);
-                for (var constraint : constraints) {
-                    sb.append(indent).append(constraint.toAnnotation()).append("\n");
-                }
-                
-                // CobolName annotation for mapping
-                sb.append(indent).append("@JsonProperty(\"").append(field.toJavaFieldName()).append("\")\n");
-                
-                // Field declaration
-                String javaType = getJavaType(field);
-                String fieldName = getJavaFieldName(field);
-                
-                if (field.getOccursCount() > 1) {
-                    sb.append(indent).append("@Builder.Default\n");
-                    sb.append(indent).append("private List<").append(javaType).append("> ")
-                            .append(fieldName).append(" = new ArrayList<>();\n\n");
-                } else {
-                    sb.append(indent).append("private ").append(javaType).append(" ")
-                            .append(fieldName).append(";\n\n");
-                }
-                
-            } else if (child instanceof GroupNode childGroup) {
-                if (mappingDoc.shouldIgnore(childGroup.getName())) {
-                    continue;
-                }
-                
-                // Generate nested class or expand fields
-                // For simplicity, we'll flatten groups into the parent class
-                generateFields(sb, childGroup, indent);
-            }
-        }
+        log.info("  Generated {} fields in {}", copybook.getAllFields().stream()
+                .filter(f -> !f.isFiller() && !mappingDoc.shouldIgnore(f.getName()))
+                .count(), className);
     }
     
     private String getJavaType(FieldNode field) {

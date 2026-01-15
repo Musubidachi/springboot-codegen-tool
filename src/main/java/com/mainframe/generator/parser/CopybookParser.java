@@ -218,6 +218,10 @@ public class CopybookParser {
         
         // Create appropriate node type
         CopybookNode node;
+        
+        // Add to parent FIRST (before pushing groups to stack)
+        CopybookNode parent = nodeStack.peek();
+        
         if (picture != null) {
             // It's a leaf field
             FieldNode field = FieldNode.builder()
@@ -260,15 +264,18 @@ public class CopybookParser {
                     .build();
             
             groupsByName.put(fieldName.toUpperCase(), group);
-            nodeStack.push(group);
             node = group;
             log.debug("Parsed group: {} at line {}", fieldName, startLine);
         }
         
         // Add to parent
-        CopybookNode parent = nodeStack.peek();
         if (parent instanceof GroupNode groupParent) {
             groupParent.addChild(node);
+        }
+        
+        // Push groups to stack AFTER adding to parent (so children go into this group)
+        if (node instanceof GroupNode group) {
+            nodeStack.push(group);
         }
         
         // Handle REDEFINES
