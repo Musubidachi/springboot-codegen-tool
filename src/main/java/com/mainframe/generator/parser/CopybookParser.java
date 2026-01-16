@@ -143,6 +143,8 @@ public class CopybookParser {
             fieldName = advance().getValue();
         }
         
+        log.debug("Parsing data item: level={}, name={} at line {}", level, fieldName, startLine);
+        
         // Adjust stack for hierarchical structure
         adjustStackForLevel(level);
         
@@ -344,24 +346,41 @@ public class CopybookParser {
     private PictureClause parsePictureClause() {
         StringBuilder picBuilder = new StringBuilder();
         
-        // Collect all picture elements
+        // Collect all picture elements until we hit a clause terminator
         while (!isAtEnd() && !check(TokenType.PERIOD) && 
                !check(TokenType.USAGE) && !check(TokenType.OCCURS) &&
                !check(TokenType.VALUE) && !check(TokenType.VALUES) &&
-               !check(TokenType.REDEFINES) && !peek().isUsageType()) {
+               !check(TokenType.REDEFINES) && !check(TokenType.DEPENDING) &&
+               !peek().isUsageType()) {
             
             CopybookToken token = peek();
-            if (token.getType() == TokenType.IDENTIFIER || 
-                token.getType() == TokenType.NUMERIC_LITERAL ||
-                token.getType() == TokenType.LPAREN ||
-                token.getType() == TokenType.RPAREN) {
+            TokenType type = token.getType();
+            
+            // Accept identifiers (like X, A, Z, S), numerics, parentheses, and level numbers as part of PIC
+            // Note: LEVEL_NUMBER is needed because numbers 1-88 (like "8" in X(8)) are tokenized as level numbers
+            if (type == TokenType.IDENTIFIER || 
+                type == TokenType.NUMERIC_LITERAL ||
+                type == TokenType.LEVEL_NUMBER ||
+                type == TokenType.LPAREN ||
+                type == TokenType.RPAREN) {
                 picBuilder.append(advance().getValue());
             } else {
+                // Stop on unrecognized token types (keywords, etc.)
                 break;
             }
         }
         
-        return PictureClause.parse(picBuilder.toString());
+        String picString = picBuilder.toString();
+        log.debug("Parsed PIC string: '{}'", picString);
+        
+        PictureClause pic = PictureClause.parse(picString);
+        if (pic != null) {
+            log.debug("  Parsed PIC: totalLength={}, intDigits={}, decDigits={}, numeric={}, alpha={}", 
+                    pic.getTotalLength(), pic.getIntegerDigits(), pic.getDecimalDigits(),
+                    pic.isNumeric(), pic.isAlphanumeric());
+        }
+        
+        return pic;
     }
     
     private UsageType parseUsageType() {

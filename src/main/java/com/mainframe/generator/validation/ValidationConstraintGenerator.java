@@ -32,8 +32,12 @@ public class ValidationConstraintGenerator {
         
         PictureClause pic = field.getPicture();
         if (pic == null) {
+            log.warn("Field {} has no PictureClause", field.getName());
             return constraints;
         }
+        
+        log.debug("Generating constraints for field: {} with PIC: {} (totalLength={})", 
+                field.getName(), pic.getRawPicture(), pic.getTotalLength());
         
         String javaType = field.inferJavaType();
         

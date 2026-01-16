@@ -443,6 +443,14 @@ public class ProjectGenerator {
                 copybook.getRootGroup() != null ? copybook.getRootGroup().getChildren().size() : 0);
         log.info("  Total fields in copybook: {}", copybook.getAllFields().size());
         
+        // Collect enum types that need to be imported
+        Set<String> enumImports = new HashSet<>();
+        for (FieldNode field : copybook.getAllFields()) {
+            if (field.hasEnum88Values() && !field.isFiller() && !mappingDoc.shouldIgnore(field.getName())) {
+                enumImports.add(config.getBasePackage() + ".model." + toPascalCase(field.getName()) + "Enum");
+            }
+        }
+        
         StringBuilder sb = new StringBuilder();
         
         // Package and imports
@@ -454,7 +462,13 @@ public class ProjectGenerator {
         sb.append("import java.math.BigDecimal;\n");
         sb.append("import java.time.LocalDate;\n");
         sb.append("import java.util.List;\n");
-        sb.append("import java.util.ArrayList;\n\n");
+        sb.append("import java.util.ArrayList;\n");
+        
+        // Import enum classes
+        for (String enumImport : enumImports) {
+            sb.append("import ").append(enumImport).append(";\n");
+        }
+        sb.append("\n");
         
         // Class declaration
         String className = toPascalCase(config.getProgramId()) + suffix;
