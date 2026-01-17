@@ -20,7 +20,14 @@ public class GeneratorResult {
     private int dtoClassesGenerated;
     private int requestByteLength;
     private int responseByteLength;
-    
+
+    // New folder-based selection counts
+    private int requestModelsCount;
+    private int responseModelsCount;
+    private int sharedModelsCount;
+    private int serializersGenerated;
+    private int tortureTestsGenerated;
+
     private int notNullCount;
     private int sizeCount;
     private int digitsCount;

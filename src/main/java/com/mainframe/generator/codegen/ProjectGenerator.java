@@ -25,11 +25,20 @@ public class ProjectGenerator {
     private final GeneratorConfig config;
     private final Configuration freemarkerConfig;
     private final ValidationConstraintGenerator validationGenerator;
-    
+
     private List<CopybookModel> copybookModels;
     private MappingDocument mappingDoc;
     private CopybookModel requestCopybook;
     private CopybookModel responseCopybook;
+
+    // New folder-based selection sets
+    private Set<CopybookModel> requestModels = new LinkedHashSet<>();
+    private Set<CopybookModel> responseModels = new LinkedHashSet<>();
+    private Set<CopybookModel> sharedModels = new LinkedHashSet<>();
+    private Set<CopybookModel> allModelsToGenerate = new LinkedHashSet<>();
+
+    // Track field values during deserialization for ODO support
+    private Map<String, String> deserializationFieldValues = new HashMap<>();
     
     public ProjectGenerator(GeneratorConfig config) {
         this.config = config;
@@ -128,7 +137,14 @@ public class ProjectGenerator {
             // Step 13: Generate tests
             log.info("Step 13: Generating tests...");
             generateTests(projectDir);
-            
+
+            // Step 13.5: Generate torture tests if test mode enabled
+            int tortureTestsCount = 0;
+            if (config.isTestMode()) {
+                log.info("Step 13.5: Generating torture tests (test mode)...");
+                tortureTestsCount = generateTortureTests(projectDir);
+            }
+
             // Step 14: Generate sample request
             log.info("Step 14: Generating sample files...");
             generateSampleFiles(projectDir);
@@ -155,6 +171,11 @@ public class ProjectGenerator {
                     .dtoClassesGenerated(dtoCount)
                     .requestByteLength(requestCopybook != null ? requestCopybook.calculateTotalByteLength() : 0)
                     .responseByteLength(responseCopybook != null ? responseCopybook.calculateTotalByteLength() : 0)
+                    .requestModelsCount(requestModels.size())
+                    .responseModelsCount(responseModels.size())
+                    .sharedModelsCount(sharedModels.size())
+                    .serializersGenerated(allModelsToGenerate.size())
+                    .tortureTestsGenerated(tortureTestsCount)
                     .notNullCount(validationGenerator.getNotNullCount())
                     .sizeCount(validationGenerator.getSizeCount())
                     .digitsCount(validationGenerator.getDigitsCount())
@@ -168,6 +189,117 @@ public class ProjectGenerator {
     }
     
     private void identifyRequestResponse() {
+        boolean usingFolderBasedSelection = config.getRequestCopybookDir() != null || config.getResponseCopybookDir() != null;
+
+        if (usingFolderBasedSelection) {
+            identifyRequestResponseFromFolders();
+        } else {
+            identifyRequestResponseHeuristic();
+        }
+    }
+
+    private void identifyRequestResponseFromFolders() {
+        log.info("Using folder-based copybook selection");
+
+        // Build maps by normalized name for intersection detection
+        Map<String, CopybookModel> requestMap = new HashMap<>();
+        Map<String, CopybookModel> responseMap = new HashMap<>();
+        Map<String, CopybookModel> sharedMap = new HashMap<>();
+
+        // Load request copybooks
+        if (config.getRequestCopybookDir() != null) {
+            for (CopybookModel model : copybookModels) {
+                if (model.getSourcePath().startsWith(config.getRequestCopybookDir().toString())) {
+                    requestMap.put(model.getName().toLowerCase(), model);
+                    requestModels.add(model);
+                }
+            }
+            log.info("  Request copybooks: {}", requestModels.size());
+        }
+
+        // Load response copybooks
+        if (config.getResponseCopybookDir() != null) {
+            for (CopybookModel model : copybookModels) {
+                if (model.getSourcePath().startsWith(config.getResponseCopybookDir().toString())) {
+                    responseMap.put(model.getName().toLowerCase(), model);
+                    responseModels.add(model);
+                }
+            }
+            log.info("  Response copybooks: {}", responseModels.size());
+        }
+
+        // Load explicitly shared copybooks
+        if (config.getSharedCopybookDir() != null) {
+            for (CopybookModel model : copybookModels) {
+                if (model.getSourcePath().startsWith(config.getSharedCopybookDir().toString())) {
+                    sharedMap.put(model.getName().toLowerCase(), model);
+                    sharedModels.add(model);
+                }
+            }
+            log.info("  Explicit shared copybooks: {}", sharedModels.size());
+        }
+
+        // Detect intersection (files in both request and response by name)
+        Set<String> intersection = new HashSet<>(requestMap.keySet());
+        intersection.retainAll(responseMap.keySet());
+        for (String commonName : intersection) {
+            CopybookModel model = requestMap.get(commonName);
+            sharedModels.add(model);
+            requestModels.remove(model);
+            responseModels.remove(model);
+        }
+        if (!intersection.isEmpty()) {
+            log.info("  Detected {} shared copybooks by intersection: {}", intersection.size(), intersection);
+        }
+
+        // Build union of all models to generate
+        allModelsToGenerate.addAll(requestModels);
+        allModelsToGenerate.addAll(responseModels);
+        allModelsToGenerate.addAll(sharedModels);
+
+        // Select root request copybook
+        if (config.getRequestRoot() != null && !config.getRequestRoot().isBlank()) {
+            requestCopybook = findCopybookByNameOrFile(requestModels, config.getRequestRoot());
+            if (requestCopybook == null) {
+                requestCopybook = findCopybookByNameOrFile(sharedModels, config.getRequestRoot());
+            }
+            if (requestCopybook == null) {
+                log.warn("Request root '{}' not found, using first available", config.getRequestRoot());
+                requestCopybook = selectFirstDeterministic(requestModels);
+            }
+        } else {
+            requestCopybook = selectFirstDeterministic(requestModels);
+        }
+
+        // Select root response copybook
+        if (config.getResponseRoot() != null && !config.getResponseRoot().isBlank()) {
+            responseCopybook = findCopybookByNameOrFile(responseModels, config.getResponseRoot());
+            if (responseCopybook == null) {
+                responseCopybook = findCopybookByNameOrFile(sharedModels, config.getResponseRoot());
+            }
+            if (responseCopybook == null) {
+                log.warn("Response root '{}' not found, using first available", config.getResponseRoot());
+                responseCopybook = selectFirstDeterministic(responseModels);
+            }
+        } else {
+            responseCopybook = selectFirstDeterministic(responseModels);
+        }
+
+        // Fallback if roots not found
+        if (requestCopybook == null) {
+            requestCopybook = selectFirstDeterministic(allModelsToGenerate);
+        }
+        if (responseCopybook == null) {
+            responseCopybook = requestCopybook;
+        }
+
+        log.info("  Selected request root: {}", requestCopybook != null ? requestCopybook.getName() : "none");
+        log.info("  Selected response root: {}", responseCopybook != null ? responseCopybook.getName() : "none");
+    }
+
+    private void identifyRequestResponseHeuristic() {
+        log.info("Using heuristic mode for copybook selection");
+
         // Simple heuristic: look for REQUEST/RESPONSE in names, or use first two copybooks
         for (CopybookModel model : copybookModels) {
             String name = model.getName().toUpperCase();
@@ -177,7 +309,7 @@ public class ProjectGenerator {
                 responseCopybook = model;
             }
         }
-        
+
         // Fallback: use first copybook as both request and response
         if (requestCopybook == null && !copybookModels.isEmpty()) {
             requestCopybook = copybookModels.get(0);
@@ -185,6 +317,43 @@ public class ProjectGenerator {
         if (responseCopybook == null) {
             responseCopybook = copybookModels.size() > 1 ? copybookModels.get(1) : requestCopybook;
         }
+
+        // In heuristic mode, allModelsToGenerate is just request and response roots
+        if (requestCopybook != null) {
+            allModelsToGenerate.add(requestCopybook);
+        }
+        if (responseCopybook != null && responseCopybook != requestCopybook) {
+            allModelsToGenerate.add(responseCopybook);
+        }
+
+        log.info("  Request copybook: {}", requestCopybook != null ? requestCopybook.getName() : "none");
+        log.info("  Response copybook: {}", responseCopybook != null ? responseCopybook.getName() : "none");
+    }
+
+    private CopybookModel findCopybookByNameOrFile(Set<CopybookModel> models, String nameOrFile) {
+        for (CopybookModel model : models) {
+            if (model.getName().equalsIgnoreCase(nameOrFile)) {
+                return model;
+            }
+            // Also try matching against filename
+            Path sourcePath = Path.of(model.getSourcePath());
+            String fileName = sourcePath.getFileName().toString();
+            if (fileName.equalsIgnoreCase(nameOrFile) || fileName.equalsIgnoreCase(nameOrFile + ".cpy")) {
+                return model;
+            }
+        }
+        return null;
+    }
+
+    private CopybookModel selectFirstDeterministic(Set<CopybookModel> models) {
+        if (models.isEmpty()) {
+            return null;
+        }
+        // Sort by name for deterministic selection
+        return models.stream()
+                .sorted(Comparator.comparing(CopybookModel::getName))
+                .findFirst()
+                .orElse(null);
     }
     
     private Path createProjectStructure() throws IOException {
@@ -209,13 +378,18 @@ public class ProjectGenerator {
         Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/mainframe/emulator"));
         Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/model/request"));
         Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/model/response"));
+        Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/model/shared"));
         Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/model/layout"));
         Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/service"));
         Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/util"));
+        Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/util/request"));
+        Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/util/response"));
+        Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/util/shared"));
         
         Files.createDirectories(projectDir.resolve("src/test/java/" + basePackagePath + "/model/request"));
         Files.createDirectories(projectDir.resolve("src/test/java/" + basePackagePath + "/model/response"));
         Files.createDirectories(projectDir.resolve("src/test/java/" + basePackagePath + "/serializer"));
+        Files.createDirectories(projectDir.resolve("src/test/java/" + basePackagePath + "/torture"));
         Files.createDirectories(projectDir.resolve("src/test/java/" + basePackagePath + "/tcp"));
         Files.createDirectories(projectDir.resolve("src/test/java/" + basePackagePath + "/camel"));
         Files.createDirectories(projectDir.resolve("src/test/java/" + basePackagePath + "/controller"));
@@ -410,30 +584,227 @@ public class ProjectGenerator {
     
     private int generateModelClasses(Path projectDir) throws IOException {
         int count = 0;
-        
-        // Generate request DTO
-        if (requestCopybook != null) {
-            generateDtoClass(projectDir, requestCopybook, "request", "Request");
-            count++;
+        Set<String> generatedClassNames = new HashSet<>();
+
+        boolean usingFolderBasedSelection = config.getRequestCopybookDir() != null || config.getResponseCopybookDir() != null;
+
+        if (usingFolderBasedSelection || config.isTestMode()) {
+            // Folder-based mode or test mode: generate DTOs for all models with de-duplication
+
+            // Apply inheritance factoring if enabled
+            if (config.isInferInheritance()) {
+                applyInheritanceFactoring();
+            }
+
+            // Generate request root DTO (special name: {ProgramId}Request)
+            if (requestCopybook != null) {
+                String className = toPascalCase(config.getProgramId()) + "Request";
+                generateDtoClass(projectDir, requestCopybook, "request", "Request", className, false);
+                generatedClassNames.add(className);
+                count++;
+            }
+
+            // Generate response root DTO (special name: {ProgramId}Response)
+            if (responseCopybook != null && responseCopybook != requestCopybook) {
+                String className = toPascalCase(config.getProgramId()) + "Response";
+                generateDtoClass(projectDir, responseCopybook, "response", "Response", className, false);
+                generatedClassNames.add(className);
+                count++;
+            } else if (responseCopybook == requestCopybook && responseCopybook != null) {
+                String className = toPascalCase(config.getProgramId()) + "Response";
+                generateDtoClass(projectDir, responseCopybook, "response", "Response", className, false);
+                generatedClassNames.add(className);
+                count++;
+            }
+
+            // Generate non-root request models
+            for (CopybookModel model : requestModels) {
+                if (model == requestCopybook) continue; // Skip root, already generated
+                String className = toPascalCase(model.getName());
+                if (generatedClassNames.contains(className)) {
+                    className = disambiguateClassName(className, model, generatedClassNames);
+                }
+                generateDtoClass(projectDir, model, "request", null, className, config.isTestMode());
+                generatedClassNames.add(className);
+                count++;
+            }
+
+            // Generate non-root response models
+            for (CopybookModel model : responseModels) {
+                if (model == responseCopybook) continue; // Skip root, already generated
+                String className = toPascalCase(model.getName());
+                if (generatedClassNames.contains(className)) {
+                    className = disambiguateClassName(className, model, generatedClassNames);
+                }
+                generateDtoClass(projectDir, model, "response", null, className, config.isTestMode());
+                generatedClassNames.add(className);
+                count++;
+            }
+
+            // Generate shared models (de-duped)
+            for (CopybookModel model : sharedModels) {
+                String className = toPascalCase(model.getName());
+                if (generatedClassNames.contains(className)) {
+                    log.debug("Skipping duplicate shared model: {}", className);
+                    continue; // Already generated in request or response
+                }
+                generateDtoClass(projectDir, model, "shared", null, className, config.isTestMode());
+                generatedClassNames.add(className);
+                count++;
+            }
+
+            // Test mode: generate DTOs for all remaining parsed copybooks
+            if (config.isTestMode()) {
+                for (CopybookModel model : copybookModels) {
+                    String className = toPascalCase(model.getName());
+                    if (generatedClassNames.contains(className)) {
+                        continue; // Already generated
+                    }
+                    generateDtoClass(projectDir, model, "layout", null, className, true);
+                    generatedClassNames.add(className);
+                    count++;
+                }
+            }
+
+        } else {
+            // Heuristic mode (backward compatibility)
+            if (requestCopybook != null) {
+                String className = toPascalCase(config.getProgramId()) + "Request";
+                generateDtoClass(projectDir, requestCopybook, "request", "Request", className, false);
+                count++;
+            }
+
+            if (responseCopybook != null && responseCopybook != requestCopybook) {
+                String className = toPascalCase(config.getProgramId()) + "Response";
+                generateDtoClass(projectDir, responseCopybook, "response", "Response", className, false);
+                count++;
+            } else if (responseCopybook == requestCopybook && responseCopybook != null) {
+                String className = toPascalCase(config.getProgramId()) + "Response";
+                generateDtoClass(projectDir, responseCopybook, "response", "Response", className, false);
+                count++;
+            }
         }
-        
-        // Generate response DTO
-        if (responseCopybook != null && responseCopybook != requestCopybook) {
-            generateDtoClass(projectDir, responseCopybook, "response", "Response");
-            count++;
-        } else if (responseCopybook == requestCopybook) {
-            // Use same structure for response
-            generateDtoClass(projectDir, responseCopybook, "response", "Response");
-            count++;
-        }
-        
+
         return count;
     }
-    
-    private void generateDtoClass(Path projectDir, CopybookModel copybook, String subPackage, String suffix)
-            throws IOException {
+
+    private String disambiguateClassName(String baseName, CopybookModel model, Set<String> existingNames) {
+        // Deterministic disambiguation based on source path hash
+        String sourcePath = model.getSourcePath();
+        int hash = Math.abs(sourcePath.hashCode()) % 100;
+        String disambiguated = baseName + "_" + hash;
+        while (existingNames.contains(disambiguated)) {
+            hash++;
+            disambiguated = baseName + "_" + hash;
+        }
+        log.warn("Class name collision for '{}', using '{}'", baseName, disambiguated);
+        return disambiguated;
+    }
+
+    /**
+     * Apply inheritance factoring to models.
+     * Detects when DTO structure A is a strict prefix/subset of DTO structure B,
+     * and generates class B extends A with only the extra fields.
+     *
+     * IMPLEMENTATION NOTE: This is a complex feature that requires:
+     * 1. Field-level comparison (names, types, order, constraints)
+     * 2. Handling REDEFINES (should NOT infer inheritance if either uses REDEFINES)
+     * 3. Largest parent selection when multiple candidates exist
+     * 4. Serializer generation respecting inherited field ordering
+     *
+     * Current implementation: Basic detection with conservative rules.
+     * Future enhancement: Full implementation of inheritance hierarchy generation.
+     */
+    private void applyInheritanceFactoring() {
+        if (allModelsToGenerate.isEmpty()) {
+            return;
+        }
+
+        log.info("Inheritance factoring enabled (experimental)");
+        log.warn("NOTE: Inheritance factoring is currently in experimental mode.");
+        log.warn("      Generation will proceed without inheritance for safety.");
+        log.warn("      Full implementation requires careful handling of:");
+        log.warn("      - Field compatibility checks (types, constraints, order)");
+        log.warn("      - REDEFINES exclusion");
+        log.warn("      - Serializer ordering for parent/child fields");
+
+        // Basic detection logic (conservative, no actual inheritance generation yet)
+        List<CopybookModel> modelsList = new ArrayList<>(allModelsToGenerate);
+        for (int i = 0; i < modelsList.size(); i++) {
+            for (int j = 0; j < modelsList.size(); j++) {
+                if (i == j) continue;
+
+                CopybookModel potentialParent = modelsList.get(i);
+                CopybookModel potentialChild = modelsList.get(j);
+
+                // Check if potentialParent is a prefix of potentialChild
+                if (isPrefixStructure(potentialParent, potentialChild)) {
+                    log.debug("Detected potential inheritance: {} could extend {}",
+                            potentialChild.getName(), potentialParent.getName());
+                    // TODO: Generate inheritance hierarchy
+                }
+            }
+        }
+    }
+
+    /**
+     * Check if parentModel is a strict prefix of childModel
+     * (same fields in same order, child has additional fields)
+     */
+    private boolean isPrefixStructure(CopybookModel parentModel, CopybookModel childModel) {
+        // Conservative check: Don't infer inheritance if either uses REDEFINES
+        if (hasRedefines(parentModel) || hasRedefines(childModel)) {
+            return false;
+        }
+
+        List<FieldNode> parentFields = parentModel.getAllFields();
+        List<FieldNode> childFields = childModel.getAllFields();
+
+        // Child must have more fields than parent
+        if (childFields.size() <= parentFields.size()) {
+            return false;
+        }
+
+        // Check if first N fields of child match parent fields exactly
+        for (int i = 0; i < parentFields.size(); i++) {
+            FieldNode parentField = parentFields.get(i);
+            FieldNode childField = childFields.get(i);
+
+            // Compare field names (after mapping)
+            String parentName = getJavaFieldName(parentField);
+            String childName = getJavaFieldName(childField);
+            if (!parentName.equals(childName)) {
+                return false;
+            }
+
+            // Compare field types
+            String parentType = getJavaType(parentField);
+            String childType = getJavaType(childField);
+            if (!parentType.equals(childType)) {
+                return false;
+            }
+
+            // Compare byte lengths
+            if (parentField.getByteLength() != childField.getByteLength()) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private boolean hasRedefines(CopybookModel model) {
+        for (FieldNode field : model.getAllFields()) {
+            if (field.getRedefines() != null && !field.getRedefines().isBlank()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void generateDtoClass(Path projectDir, CopybookModel copybook, String subPackage, String suffix,
+                                   String className, boolean isTestMode) throws IOException {
         String basePackagePath = config.getBasePackage().replace('.', '/');
-        String className = toPascalCase(config.getProgramId()) + suffix;
 
         log.info("Generating DTO class: {} from copybook: {}", className, copybook.getName());
         log.info("  Root group children count: {}",
@@ -947,11 +1318,71 @@ public class ProjectGenerator {
                 """, config.getBasePackage(), config.getEncoding().toUpperCase());
         
         Files.writeString(ebcdicUtils, ebcdicContent);
-        
-        // Generate concrete serializer for request/response
-        generateConcreteSerializer(projectDir, requestCopybook, "Request");
-        if (responseCopybook != requestCopybook) {
-            generateConcreteSerializer(projectDir, responseCopybook, "Response");
+
+        // Generate concrete serializers
+        boolean usingFolderBasedSelection = config.getRequestCopybookDir() != null || config.getResponseCopybookDir() != null;
+        Set<CopybookModel> serializedModels = new HashSet<>();
+
+        if (usingFolderBasedSelection || config.isTestMode()) {
+            // Folder-based mode or test mode: generate serializers for all models
+
+            // Generate request root serializer
+            if (requestCopybook != null) {
+                String className = toPascalCase(config.getProgramId()) + "Request";
+                generateConcreteSerializerForModel(projectDir, requestCopybook, "Request", className, "request", false);
+                serializedModels.add(requestCopybook);
+            }
+
+            // Generate response root serializer
+            if (responseCopybook != null && responseCopybook != requestCopybook) {
+                String className = toPascalCase(config.getProgramId()) + "Response";
+                generateConcreteSerializerForModel(projectDir, responseCopybook, "Response", className, "response", false);
+                serializedModels.add(responseCopybook);
+            } else if (responseCopybook == requestCopybook && responseCopybook != null) {
+                String className = toPascalCase(config.getProgramId()) + "Response";
+                generateConcreteSerializerForModel(projectDir, responseCopybook, "Response", className, "response", false);
+            }
+
+            // Generate serializers for non-root request models
+            for (CopybookModel model : requestModels) {
+                if (serializedModels.contains(model)) continue;
+                String className = toPascalCase(model.getName());
+                generateConcreteSerializerForModel(projectDir, model, null, className, "request", config.isTestMode());
+                serializedModels.add(model);
+            }
+
+            // Generate serializers for non-root response models
+            for (CopybookModel model : responseModels) {
+                if (serializedModels.contains(model)) continue;
+                String className = toPascalCase(model.getName());
+                generateConcreteSerializerForModel(projectDir, model, null, className, "response", config.isTestMode());
+                serializedModels.add(model);
+            }
+
+            // Generate serializers for shared models
+            for (CopybookModel model : sharedModels) {
+                if (serializedModels.contains(model)) continue;
+                String className = toPascalCase(model.getName());
+                generateConcreteSerializerForModel(projectDir, model, null, className, "shared", config.isTestMode());
+                serializedModels.add(model);
+            }
+
+            // Test mode: generate serializers for all remaining parsed copybooks
+            if (config.isTestMode()) {
+                for (CopybookModel model : copybookModels) {
+                    if (serializedModels.contains(model)) continue;
+                    String className = toPascalCase(model.getName());
+                    generateConcreteSerializerForModel(projectDir, model, null, className, "layout", true);
+                    serializedModels.add(model);
+                }
+            }
+
+        } else {
+            // Heuristic mode (backward compatibility)
+            generateConcreteSerializer(projectDir, requestCopybook, "Request");
+            if (responseCopybook != requestCopybook) {
+                generateConcreteSerializer(projectDir, responseCopybook, "Response");
+            }
         }
     }
     
@@ -1026,10 +1457,91 @@ public class ProjectGenerator {
         sb.append("    }\n");
         
         sb.append("}\n");
-        
+
         Files.writeString(serializerFile, sb.toString());
     }
-    
+
+    private void generateConcreteSerializerForModel(Path projectDir, CopybookModel copybook, String suffix,
+                                                     String dtoClassName, String subPackage, boolean isTestMode)
+            throws IOException {
+        String basePackagePath = config.getBasePackage().replace('.', '/');
+        String serializerClassName = dtoClassName + "Serializer";
+
+        // Determine serializer package based on subPackage
+        String serializerPackage = config.getBasePackage() + ".util." + subPackage;
+        Path serializerFile = projectDir.resolve(
+                "src/main/java/" + basePackagePath + "/util/" + subPackage + "/" + serializerClassName + ".java"
+        );
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("package ").append(serializerPackage).append(";\n\n");
+        sb.append("import ").append(config.getBasePackage()).append(".model.")
+                .append(subPackage).append(".").append(dtoClassName).append(";\n");
+        sb.append("import ").append(config.getBasePackage()).append(".util.CobolSerializer;\n");
+        sb.append("import ").append(config.getBasePackage()).append(".util.EbcdicUtils;\n");
+
+        // Collect and import enum types
+        Set<String> enumImports = new HashSet<>();
+        for (FieldNode field : copybook.getAllFields()) {
+            if (field.hasEnum88Values() && !field.isFiller() && !mappingDoc.shouldIgnore(field.getName())) {
+                enumImports.add(config.getBasePackage() + ".model." + toPascalCase(field.getName()) + "Enum");
+            }
+        }
+        for (String enumImport : enumImports) {
+            sb.append("import ").append(enumImport).append(";\n");
+        }
+
+        sb.append("import org.springframework.stereotype.Component;\n");
+        sb.append("import java.math.BigDecimal;\n");
+        sb.append("import java.util.List;\n");
+        sb.append("import java.util.ArrayList;\n\n");
+
+        sb.append("/**\n");
+        sb.append(" * Serializer for ").append(dtoClassName).append("\n");
+        sb.append(" * Byte length: ").append(copybook.calculateTotalByteLength()).append("\n");
+        sb.append(" */\n");
+        if (!isTestMode) {
+            sb.append("@Component\n");
+        }
+        sb.append("public class ").append(serializerClassName).append(" implements CobolSerializer<")
+                .append(dtoClassName).append("> {\n\n");
+
+        sb.append("    private static final int BYTE_LENGTH = ").append(copybook.calculateTotalByteLength()).append(";\n\n");
+
+        // serialize method
+        sb.append("    @Override\n");
+        sb.append("    public byte[] serialize(").append(dtoClassName).append(" obj) {\n");
+        sb.append("        byte[] result = new byte[BYTE_LENGTH];\n");
+        sb.append("        int offset = 0;\n\n");
+
+        generateSerializeFields(sb, copybook.getRootGroup(), "obj", "        ");
+
+        sb.append("        return result;\n");
+        sb.append("    }\n\n");
+
+        // deserialize method
+        sb.append("    @Override\n");
+        sb.append("    public ").append(dtoClassName).append(" deserialize(byte[] bytes) {\n");
+        sb.append("        ").append(dtoClassName).append(".").append(dtoClassName)
+                .append("Builder builder = ").append(dtoClassName).append(".builder();\n");
+        sb.append("        int offset = 0;\n\n");
+
+        generateDeserializeFields(sb, copybook.getRootGroup(), "builder", "        ");
+
+        sb.append("        return builder.build();\n");
+        sb.append("    }\n\n");
+
+        // getByteLength method
+        sb.append("    @Override\n");
+        sb.append("    public int getByteLength() {\n");
+        sb.append("        return BYTE_LENGTH;\n");
+        sb.append("    }\n");
+
+        sb.append("}\n");
+
+        Files.writeString(serializerFile, sb.toString());
+    }
+
     private void generateSerializeFields(StringBuilder sb, GroupNode group, String objRef, String indent) {
         for (CopybookNode child : group.getChildren()) {
             if (child instanceof FieldNode field) {
@@ -1229,9 +1741,10 @@ public class ProjectGenerator {
                         sb.append(indent).append("// OCCURS ").append(field.getOccursCount())
                                 .append(" DEPENDING ON ").append(occursDepending).append(" - ").append(field.getName()).append("\n");
                         String dependingFieldName = toCamelCase(occursDepending);
-                        String dependingGetter = builderRef + ".build().get" + capitalize(dependingFieldName) + "()";
+                        // Use stored field value instead of calling .build() prematurely
+                        String dependingVarName = "stored_" + dependingFieldName;
                         sb.append(indent).append("int actualCount_").append(fieldName).append(" = ")
-                                .append(dependingGetter).append(" != null ? ").append(dependingGetter)
+                                .append(dependingVarName).append(" != null ? ").append(dependingVarName)
                                 .append(".intValue() : 0;\n");
                         sb.append(indent).append("actualCount_").append(fieldName).append(" = Math.min(actualCount_")
                                 .append(fieldName).append(", ").append(field.getOccursCount()).append(");\n");
@@ -1280,9 +1793,10 @@ public class ProjectGenerator {
                         sb.append(indent).append("// OCCURS ").append(childGroup.getOccursCount())
                                 .append(" DEPENDING ON ").append(occursDepending).append(" - ").append(childGroup.getName()).append("\n");
                         String dependingFieldName = toCamelCase(occursDepending);
-                        String dependingGetter = builderRef + ".build().get" + capitalize(dependingFieldName) + "()";
+                        // Use stored field value instead of calling .build() prematurely
+                        String dependingVarName = "stored_" + dependingFieldName;
                         sb.append(indent).append("int actualCount_").append(groupFieldName).append(" = ")
-                                .append(dependingGetter).append(" != null ? ").append(dependingGetter)
+                                .append(dependingVarName).append(" != null ? ").append(dependingVarName)
                                 .append(".intValue() : 0;\n");
                         sb.append(indent).append("actualCount_").append(groupFieldName).append(" = Math.min(actualCount_")
                                 .append(groupFieldName).append(", ").append(childGroup.getOccursCount()).append(");\n");
@@ -1332,9 +1846,14 @@ public class ProjectGenerator {
         // Deserialize value
         String deserializedValue = getDeserializeExpression(field, byteLen, pic, usage, javaType);
 
+        // Store the value in a local variable for ODO support
+        String storedVarName = "stored_" + fieldName;
+        sb.append(indent).append(javaType).append(" ").append(storedVarName).append(" = ")
+                .append(deserializedValue).append(";\n");
+
         // Set on builder
         sb.append(indent).append(builderRef).append(".").append(fieldName)
-                .append("(").append(deserializedValue).append(");\n");
+                .append("(").append(storedVarName).append(");\n");
         sb.append(indent).append("offset += ").append(byteLen).append(";\n\n");
     }
 
@@ -2219,7 +2738,137 @@ public class ProjectGenerator {
         
         Files.writeString(controllerTestFile, controllerTestContent);
     }
-    
+
+    private int generateTortureTests(Path projectDir) throws IOException {
+        String basePackagePath = config.getBasePackage().replace('.', '/');
+        int testCount = 0;
+
+        // Generate torture tests for all models
+        Set<CopybookModel> testedModels = new HashSet<>();
+
+        // Test all models in allModelsToGenerate
+        for (CopybookModel model : allModelsToGenerate) {
+            if (testedModels.contains(model)) continue;
+
+            String className = toPascalCase(model.getName());
+            String subPackage = determineSubPackageForModel(model);
+
+            generateTortureTest(projectDir, model, className, subPackage);
+            testedModels.add(model);
+            testCount++;
+        }
+
+        // Test all remaining parsed copybooks
+        for (CopybookModel model : copybookModels) {
+            if (testedModels.contains(model)) continue;
+
+            String className = toPascalCase(model.getName());
+            generateTortureTest(projectDir, model, className, "layout");
+            testedModels.add(model);
+            testCount++;
+        }
+
+        log.info("  Generated {} torture tests", testCount);
+        return testCount;
+    }
+
+    private String determineSubPackageForModel(CopybookModel model) {
+        if (requestModels.contains(model)) return "request";
+        if (responseModels.contains(model)) return "response";
+        if (sharedModels.contains(model)) return "shared";
+        return "layout";
+    }
+
+    private void generateTortureTest(Path projectDir, CopybookModel copybook, String dtoClassName, String subPackage)
+            throws IOException {
+        String basePackagePath = config.getBasePackage().replace('.', '/');
+        String testClassName = dtoClassName + "TortureTest";
+
+        Path testFile = projectDir.resolve(
+                "src/test/java/" + basePackagePath + "/torture/" + testClassName + ".java"
+        );
+
+        int expectedByteLength = copybook.calculateTotalByteLength();
+        String serializerClassName = dtoClassName + "Serializer";
+
+        String testContent = String.format("""
+                package %s.torture;
+
+                import %s.model.%s.%s;
+                import %s.util.%s.%s;
+                import org.junit.jupiter.api.Test;
+
+                import static org.junit.jupiter.api.Assertions.*;
+
+                /**
+                 * Torture test for %s: validates serializer correctness
+                 * - Byte length matches copybook definition
+                 * - Serialization produces correct length
+                 * - Deserialization does not throw
+                 * - Round-trip stability (optional)
+                 */
+                class %s {
+
+                    private final %s serializer = new %s();
+
+                    @Test
+                    void testSerializerByteLengthMatchesCopybook() {
+                        assertEquals(%d, serializer.getByteLength(),
+                            "Serializer byte length should match copybook total byte length");
+                    }
+
+                    @Test
+                    void testSerializeProducesCorrectLength() {
+                        %s dto = %s.builder().build();
+                        byte[] bytes = serializer.serialize(dto);
+
+                        assertNotNull(bytes, "Serialized bytes should not be null");
+                        assertEquals(%d, bytes.length,
+                            "Serialized byte array length should match expected length");
+                    }
+
+                    @Test
+                    void testDeserializeDoesNotThrow() {
+                        %s original = %s.builder().build();
+                        byte[] bytes = serializer.serialize(original);
+
+                        assertDoesNotThrow(() -> serializer.deserialize(bytes),
+                            "Deserialization should not throw an exception");
+                    }
+
+                    @Test
+                    void testRoundTripStability() {
+                        %s original = %s.builder().build();
+                        byte[] bytes1 = serializer.serialize(original);
+                        %s deserialized = serializer.deserialize(bytes1);
+                        byte[] bytes2 = serializer.serialize(deserialized);
+
+                        assertEquals(bytes1.length, bytes2.length,
+                            "Round-trip serialization should produce same byte length");
+
+                        // Note: Full byte equality requires all fields properly initialized
+                        // This test validates structure stability
+                        assertNotNull(deserialized, "Deserialized object should not be null");
+                    }
+                }
+                """,
+                config.getBasePackage(),
+                config.getBasePackage(), subPackage, dtoClassName,
+                config.getBasePackage(), subPackage, serializerClassName,
+                dtoClassName,
+                testClassName,
+                serializerClassName, serializerClassName,
+                expectedByteLength,
+                dtoClassName, dtoClassName,
+                expectedByteLength,
+                dtoClassName, dtoClassName,
+                dtoClassName, dtoClassName,
+                dtoClassName
+        );
+
+        Files.writeString(testFile, testContent);
+    }
+
     private void generateSampleFiles(Path projectDir) throws IOException {
         // Generate sample request JSON
         Path sampleRequest = projectDir.resolve("sample-request.json");

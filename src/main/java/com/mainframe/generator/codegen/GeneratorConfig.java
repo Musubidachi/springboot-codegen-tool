@@ -27,6 +27,15 @@ public class GeneratorConfig {
     private Path outputDir;
     private boolean force;
     private boolean skipTests;
+
+    // New folder-based copybook selection fields
+    private Path requestCopybookDir;
+    private Path responseCopybookDir;
+    private Path sharedCopybookDir;
+    private String requestRoot;
+    private String responseRoot;
+    private boolean inferInheritance;
+    private boolean testMode;
     
     /**
      * Get the base package name for generated code.
