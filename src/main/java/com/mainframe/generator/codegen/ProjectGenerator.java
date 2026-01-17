@@ -430,19 +430,19 @@ public class ProjectGenerator {
         return count;
     }
     
-    private void generateDtoClass(Path projectDir, CopybookModel copybook, String subPackage, String suffix) 
+    private void generateDtoClass(Path projectDir, CopybookModel copybook, String subPackage, String suffix)
             throws IOException {
         String basePackagePath = config.getBasePackage().replace('.', '/');
-        Path classFile = projectDir.resolve(
-                "src/main/java/" + basePackagePath + "/model/" + subPackage + "/" +
-                        toPascalCase(config.getProgramId()) + suffix + ".java"
-        );
-        
-        log.info("Generating DTO class: {} from copybook: {}", classFile.getFileName(), copybook.getName());
-        log.info("  Root group children count: {}", 
+        String className = toPascalCase(config.getProgramId()) + suffix;
+
+        log.info("Generating DTO class: {} from copybook: {}", className, copybook.getName());
+        log.info("  Root group children count: {}",
                 copybook.getRootGroup() != null ? copybook.getRootGroup().getChildren().size() : 0);
-        log.info("  Total fields in copybook: {}", copybook.getAllFields().size());
-        
+
+        // First, generate all nested classes for OCCURS groups
+        Set<String> nestedClassNames = new HashSet<>();
+        generateNestedClasses(projectDir, copybook.getRootGroup(), subPackage, nestedClassNames);
+
         // Collect enum types that need to be imported
         Set<String> enumImports = new HashSet<>();
         for (FieldNode field : copybook.getAllFields()) {
@@ -450,9 +450,14 @@ public class ProjectGenerator {
                 enumImports.add(config.getBasePackage() + ".model." + toPascalCase(field.getName()) + "Enum");
             }
         }
-        
+
+        // Build main DTO class
+        Path classFile = projectDir.resolve(
+                "src/main/java/" + basePackagePath + "/model/" + subPackage + "/" + className + ".java"
+        );
+
         StringBuilder sb = new StringBuilder();
-        
+
         // Package and imports
         sb.append("package ").append(config.getBasePackage()).append(".model.").append(subPackage).append(";\n\n");
         sb.append("import jakarta.validation.Valid;\n");
@@ -463,15 +468,14 @@ public class ProjectGenerator {
         sb.append("import java.time.LocalDate;\n");
         sb.append("import java.util.List;\n");
         sb.append("import java.util.ArrayList;\n");
-        
+
         // Import enum classes
         for (String enumImport : enumImports) {
             sb.append("import ").append(enumImport).append(";\n");
         }
         sb.append("\n");
-        
+
         // Class declaration
-        String className = toPascalCase(config.getProgramId()) + suffix;
         sb.append("/**\n");
         sb.append(" * Generated from copybook: ").append(copybook.getName()).append("\n");
         sb.append(" * Total byte length: ").append(copybook.calculateTotalByteLength()).append("\n");
@@ -481,44 +485,163 @@ public class ProjectGenerator {
         sb.append("@AllArgsConstructor\n");
         sb.append("@Builder\n");
         sb.append("public class ").append(className).append(" {\n\n");
-        
-        // Generate fields from all fields in the copybook (flattened)
-        for (FieldNode field : copybook.getAllFields()) {
-            if (field.isFiller() || mappingDoc.shouldIgnore(field.getName())) {
-                continue;
-            }
-            
-            log.debug("  Generating field: {} ({})", field.getName(), field.inferJavaType());
-            
-            // Generate validation annotations
-            var constraints = validationGenerator.generateConstraints(field, true);
-            for (var constraint : constraints) {
-                sb.append("    ").append(constraint.toAnnotation()).append("\n");
-            }
-            
-            // JsonProperty annotation for mapping
-            sb.append("    @JsonProperty(\"").append(field.toJavaFieldName()).append("\")\n");
-            
-            // Field declaration
-            String javaType = getJavaType(field);
-            String fieldName = getJavaFieldName(field);
-            
-            if (field.getOccursCount() > 1) {
-                sb.append("    @Builder.Default\n");
-                sb.append("    private List<").append(javaType).append("> ")
-                        .append(fieldName).append(" = new ArrayList<>();\n\n");
-            } else {
-                sb.append("    private ").append(javaType).append(" ")
-                        .append(fieldName).append(";\n\n");
+
+        // Generate fields from root group children (hierarchical, not flattened)
+        if (copybook.getRootGroup() != null) {
+            generateDtoFields(sb, copybook.getRootGroup().getChildren(), "    ", nestedClassNames);
+        }
+
+        sb.append("}\n");
+
+        Files.writeString(classFile, sb.toString());
+        log.info("  Generated main DTO: {}", className);
+    }
+
+    /**
+     * Generate nested classes for OCCURS groups.
+     */
+    private void generateNestedClasses(Path projectDir, GroupNode parent, String subPackage, Set<String> generated)
+            throws IOException {
+        if (parent == null) return;
+
+        for (CopybookNode child : parent.getChildren()) {
+            if (child instanceof GroupNode group) {
+                // If this group has OCCURS, generate a nested class
+                if (group.getOccursCount() > 1) {
+                    String nestedClassName = toPascalCase(group.getName()) + "Item";
+
+                    // Avoid duplicate generation
+                    if (generated.contains(nestedClassName)) {
+                        continue;
+                    }
+                    generated.add(nestedClassName);
+
+                    log.info("  Generating nested class for OCCURS group: {}", nestedClassName);
+
+                    String basePackagePath = config.getBasePackage().replace('.', '/');
+                    Path nestedFile = projectDir.resolve(
+                            "src/main/java/" + basePackagePath + "/model/" + subPackage + "/" + nestedClassName + ".java"
+                    );
+
+                    StringBuilder sb = new StringBuilder();
+                    sb.append("package ").append(config.getBasePackage()).append(".model.").append(subPackage).append(";\n\n");
+                    sb.append("import jakarta.validation.Valid;\n");
+                    sb.append("import jakarta.validation.constraints.*;\n");
+                    sb.append("import lombok.*;\n");
+                    sb.append("import com.fasterxml.jackson.annotation.JsonProperty;\n");
+                    sb.append("import java.math.BigDecimal;\n");
+                    sb.append("import java.time.LocalDate;\n");
+                    sb.append("import java.util.List;\n");
+                    sb.append("import java.util.ArrayList;\n");
+
+                    // Import enums
+                    for (FieldNode field : getAllFieldsInGroup(group)) {
+                        if (field.hasEnum88Values() && !field.isFiller()) {
+                            sb.append("import ").append(config.getBasePackage()).append(".model.")
+                                    .append(toPascalCase(field.getName())).append("Enum;\n");
+                        }
+                    }
+                    sb.append("\n");
+
+                    sb.append("/**\n");
+                    sb.append(" * Generated nested class for OCCURS group: ").append(group.getName()).append("\n");
+                    sb.append(" * OCCURS ").append(group.getOccursCount()).append(" TIMES\n");
+                    sb.append(" */\n");
+                    sb.append("@Data\n");
+                    sb.append("@NoArgsConstructor\n");
+                    sb.append("@AllArgsConstructor\n");
+                    sb.append("@Builder\n");
+                    sb.append("public class ").append(nestedClassName).append(" {\n\n");
+
+                    // Generate fields for this OCCURS group
+                    generateDtoFields(sb, group.getChildren(), "    ", generated);
+
+                    sb.append("}\n");
+                    Files.writeString(nestedFile, sb.toString());
+                }
+
+                // Recurse into nested groups
+                generateNestedClasses(projectDir, group, subPackage, generated);
             }
         }
-        
-        sb.append("}\n");
-        
-        Files.writeString(classFile, sb.toString());
-        log.info("  Generated {} fields in {}", copybook.getAllFields().stream()
-                .filter(f -> !f.isFiller() && !mappingDoc.shouldIgnore(f.getName()))
-                .count(), className);
+    }
+
+    /**
+     * Generate fields for DTO class from a list of nodes.
+     */
+    private void generateDtoFields(StringBuilder sb, List<CopybookNode> nodes, String indent, Set<String> nestedClassNames) {
+        for (CopybookNode node : nodes) {
+            if (node instanceof FieldNode field) {
+                if (field.isFiller() || mappingDoc.shouldIgnore(field.getName())) {
+                    continue;
+                }
+
+                log.debug("    Generating field: {} ({})", field.getName(), field.inferJavaType());
+
+                // Generate validation annotations
+                var constraints = validationGenerator.generateConstraints(field, true);
+                for (var constraint : constraints) {
+                    sb.append(indent).append(constraint.toAnnotation()).append("\n");
+                }
+
+                // JsonProperty annotation
+                sb.append(indent).append("@JsonProperty(\"").append(field.toJavaFieldName()).append("\")\n");
+
+                // Field declaration
+                String javaType = getJavaType(field);
+                String fieldName = getJavaFieldName(field);
+
+                if (field.getOccursCount() > 1) {
+                    sb.append(indent).append("@Builder.Default\n");
+                    sb.append(indent).append("private List<").append(javaType).append("> ")
+                            .append(fieldName).append(" = new ArrayList<>();\n\n");
+                } else {
+                    sb.append(indent).append("private ").append(javaType).append(" ")
+                            .append(fieldName).append(";\n\n");
+                }
+
+            } else if (node instanceof GroupNode group) {
+                // Skip FILLER groups
+                if (group.getName().equalsIgnoreCase("FILLER")) {
+                    continue;
+                }
+
+                if (group.getOccursCount() > 1) {
+                    // OCCURS group - generate List<NestedClass>
+                    String nestedClassName = toPascalCase(group.getName()) + "Item";
+                    String fieldName = toCamelCase(group.getName());
+
+                    sb.append(indent).append("@Valid\n");
+                    sb.append(indent).append("@NotNull\n");
+                    sb.append(indent).append("@Size(max = ").append(group.getOccursCount()).append(")\n");
+                    sb.append(indent).append("@JsonProperty(\"").append(fieldName).append("\")\n");
+                    sb.append(indent).append("@Builder.Default\n");
+                    sb.append(indent).append("private List<").append(nestedClassName).append("> ")
+                            .append(fieldName).append(" = new ArrayList<>();\n\n");
+
+                    log.debug("    Generating OCCURS group field: {} -> List<{}>", group.getName(), nestedClassName);
+
+                } else {
+                    // Regular group - inline its children
+                    generateDtoFields(sb, group.getChildren(), indent, nestedClassNames);
+                }
+            }
+        }
+    }
+
+    /**
+     * Get all fields within a group (recursive).
+     */
+    private List<FieldNode> getAllFieldsInGroup(GroupNode group) {
+        List<FieldNode> fields = new ArrayList<>();
+        for (CopybookNode child : group.getChildren()) {
+            if (child instanceof FieldNode field) {
+                fields.add(field);
+            } else if (child instanceof GroupNode childGroup) {
+                fields.addAll(getAllFieldsInGroup(childGroup));
+            }
+        }
+        return fields;
     }
     
     private String getJavaType(FieldNode field) {
@@ -862,54 +985,103 @@ public class ProjectGenerator {
         for (CopybookNode child : group.getChildren()) {
             if (child instanceof FieldNode field) {
                 if (field.isFiller()) {
-                    // Just advance offset for FILLER
-                    sb.append(indent).append("offset += ").append(field.getByteLength()).append("; // FILLER\n");
+                    // Advance offset for FILLER
+                    int totalBytes = field.getByteLength() * field.getOccursCount();
+                    sb.append(indent).append("offset += ").append(totalBytes).append("; // FILLER\n");
                     continue;
                 }
                 if (mappingDoc.shouldIgnore(field.getName())) {
-                    sb.append(indent).append("offset += ").append(field.getByteLength()).append("; // IGNORED: ")
+                    int totalBytes = field.getByteLength() * field.getOccursCount();
+                    sb.append(indent).append("offset += ").append(totalBytes).append("; // IGNORED: ")
                             .append(field.getName()).append("\n");
                     continue;
                 }
-                
-                String getter = objRef + ".get" + toPascalCase(getJavaFieldName(field)) + "()";
-                generateFieldSerialize(sb, field, getter, indent);
-                
+
+                String fieldName = getJavaFieldName(field);
+                String getter = objRef + ".get" + toPascalCase(fieldName) + "()";
+
+                if (field.getOccursCount() > 1) {
+                    // Generate loop for OCCURS field
+                    String itemVar = "item" + toPascalCase(fieldName);
+                    sb.append(indent).append("// OCCURS ").append(field.getOccursCount()).append(" - ").append(field.getName()).append("\n");
+                    sb.append(indent).append("List<").append(getJavaType(field)).append("> ").append(fieldName).append("List = ")
+                            .append(getter).append(" != null ? ").append(getter).append(" : new ArrayList<>();\n");
+                    sb.append(indent).append("for (int i = 0; i < ").append(field.getOccursCount()).append("; i++) {\n");
+                    sb.append(indent).append("    ").append(getJavaType(field)).append(" ").append(itemVar)
+                            .append(" = i < ").append(fieldName).append("List.size() ? ").append(fieldName)
+                            .append("List.get(i) : null;\n");
+                    generateFieldSerialize(sb, field, itemVar, indent + "    ");
+                    sb.append(indent).append("}\n\n");
+                } else {
+                    generateFieldSerialize(sb, field, getter, indent);
+                }
+
             } else if (child instanceof GroupNode childGroup) {
-                // Recurse into group
-                generateSerializeFields(sb, childGroup, objRef, indent);
+                if (childGroup.getName().equalsIgnoreCase("FILLER")) {
+                    // Skip FILLER groups
+                    int totalBytes = childGroup.calculateByteLength();
+                    sb.append(indent).append("offset += ").append(totalBytes).append("; // FILLER GROUP\n");
+                    continue;
+                }
+
+                if (childGroup.getOccursCount() > 1) {
+                    // OCCURS group - generate loop
+                    String groupFieldName = toCamelCase(childGroup.getName());
+                    String nestedClassName = toPascalCase(childGroup.getName()) + "Item";
+                    String getter = objRef + ".get" + toPascalCase(groupFieldName) + "()";
+                    String itemVar = "item" + toPascalCase(groupFieldName);
+
+                    sb.append(indent).append("// OCCURS ").append(childGroup.getOccursCount()).append(" - ").append(childGroup.getName()).append("\n");
+                    sb.append(indent).append("List<").append(nestedClassName).append("> ").append(groupFieldName)
+                            .append("List = ").append(getter).append(" != null ? ").append(getter).append(" : new ArrayList<>();\n");
+                    sb.append(indent).append("for (int i = 0; i < ").append(childGroup.getOccursCount()).append("; i++) {\n");
+                    sb.append(indent).append("    ").append(nestedClassName).append(" ").append(itemVar)
+                            .append(" = i < ").append(groupFieldName).append("List.size() ? ")
+                            .append(groupFieldName).append("List.get(i) : null;\n");
+                    generateSerializeFields(sb, childGroup, itemVar, indent + "    ");
+                    sb.append(indent).append("}\n\n");
+                } else {
+                    // Regular group - inline
+                    generateSerializeFields(sb, childGroup, objRef, indent);
+                }
             }
         }
     }
     
-    private void generateFieldSerialize(StringBuilder sb, FieldNode field, String getter, String indent) {
+    private void generateFieldSerialize(StringBuilder sb, FieldNode field, String valueExpr, String indent) {
         int byteLen = field.getByteLength();
         PictureClause pic = field.getPicture();
         UsageType usage = field.getUsage();
-        
-        if (pic.isAlphanumeric() || (pic.isNumeric() && usage == UsageType.DISPLAY && !pic.isSigned())) {
+
+        // Handle enums - convert to value
+        if (field.hasEnum88Values()) {
+            String enumValueExpr = valueExpr + " != null ? " + valueExpr + ".getValue() : \"\"";
+            sb.append(indent).append("System.arraycopy(EbcdicUtils.stringToEbcdic(")
+                    .append(enumValueExpr).append(", ")
+                    .append(byteLen).append("), 0, result, offset, ").append(byteLen).append(");\n");
+        } else if (pic.isAlphanumeric() || (pic.isNumeric() && usage == UsageType.DISPLAY && !pic.isSigned())) {
             // String field - EBCDIC
             sb.append(indent).append("System.arraycopy(EbcdicUtils.stringToEbcdic(")
-                    .append(getter).append(" != null ? ").append(getter).append(".toString() : \"\", ")
+                    .append(valueExpr).append(" != null ? ").append(valueExpr).append(".toString() : \"\", ")
                     .append(byteLen).append("), 0, result, offset, ").append(byteLen).append(");\n");
         } else if (usage == UsageType.PACKED_DECIMAL) {
             // Packed decimal
             sb.append(indent).append("System.arraycopy(EbcdicUtils.packedDecimal(")
-                    .append(getter).append(", ").append(byteLen).append("), 0, result, offset, ")
+                    .append(valueExpr).append(", ").append(byteLen).append("), 0, result, offset, ")
                     .append(byteLen).append(");\n");
         } else if (usage == UsageType.BINARY || usage == UsageType.COMP_5) {
             // Binary
             sb.append(indent).append("System.arraycopy(EbcdicUtils.intToBinary(")
-                    .append(getter).append(" != null ? ").append(getter).append(".intValue() : 0, ")
+                    .append(valueExpr).append(" != null ? ").append(valueExpr).append(".intValue() : 0, ")
                     .append(byteLen).append("), 0, result, offset, ").append(byteLen).append(");\n");
         } else {
             // Zoned decimal
             sb.append(indent).append("System.arraycopy(EbcdicUtils.zonedDecimal(")
-                    .append(getter).append(" != null ? ").append(getter).append(".toString() : \"0\", ")
+                    .append(valueExpr).append(" != null ? ").append(valueExpr).append(".toString() : \"0\", ")
                     .append(byteLen).append(", ").append(pic.isSigned()).append("), 0, result, offset, ")
                     .append(byteLen).append(");\n");
         }
-        
+
         sb.append(indent).append("offset += ").append(byteLen).append(";\n\n");
     }
     
@@ -917,18 +1089,64 @@ public class ProjectGenerator {
         for (CopybookNode child : group.getChildren()) {
             if (child instanceof FieldNode field) {
                 if (field.isFiller()) {
-                    sb.append(indent).append("offset += ").append(field.getByteLength()).append("; // FILLER\n");
+                    int totalBytes = field.getByteLength() * field.getOccursCount();
+                    sb.append(indent).append("offset += ").append(totalBytes).append("; // FILLER\n");
                     continue;
                 }
                 if (mappingDoc.shouldIgnore(field.getName())) {
-                    sb.append(indent).append("offset += ").append(field.getByteLength()).append("; // IGNORED\n");
+                    int totalBytes = field.getByteLength() * field.getOccursCount();
+                    sb.append(indent).append("offset += ").append(totalBytes).append("; // IGNORED\n");
                     continue;
                 }
-                
-                generateFieldDeserialize(sb, field, builderRef, indent);
-                
+
+                String fieldName = getJavaFieldName(field);
+
+                if (field.getOccursCount() > 1) {
+                    // Generate loop for OCCURS field
+                    String listVar = fieldName + "List";
+                    sb.append(indent).append("// OCCURS ").append(field.getOccursCount()).append(" - ").append(field.getName()).append("\n");
+                    sb.append(indent).append("List<").append(getJavaType(field)).append("> ").append(listVar)
+                            .append(" = new ArrayList<>();\n");
+                    sb.append(indent).append("for (int i = 0; i < ").append(field.getOccursCount()).append("; i++) {\n");
+
+                    // Generate deserialization inside loop
+                    generateFieldDeserializeToVariable(sb, field, listVar, indent + "    ");
+
+                    sb.append(indent).append("}\n");
+                    sb.append(indent).append(builderRef).append(".").append(fieldName).append("(").append(listVar).append(");\n\n");
+                } else {
+                    generateFieldDeserialize(sb, field, builderRef, indent);
+                }
+
             } else if (child instanceof GroupNode childGroup) {
-                generateDeserializeFields(sb, childGroup, builderRef, indent);
+                if (childGroup.getName().equalsIgnoreCase("FILLER")) {
+                    int totalBytes = childGroup.calculateByteLength();
+                    sb.append(indent).append("offset += ").append(totalBytes).append("; // FILLER GROUP\n");
+                    continue;
+                }
+
+                if (childGroup.getOccursCount() > 1) {
+                    // OCCURS group - generate loop with nested builder
+                    String groupFieldName = toCamelCase(childGroup.getName());
+                    String nestedClassName = toPascalCase(childGroup.getName()) + "Item";
+                    String listVar = groupFieldName + "List";
+
+                    sb.append(indent).append("// OCCURS ").append(childGroup.getOccursCount()).append(" - ").append(childGroup.getName()).append("\n");
+                    sb.append(indent).append("List<").append(nestedClassName).append("> ").append(listVar)
+                            .append(" = new ArrayList<>();\n");
+                    sb.append(indent).append("for (int i = 0; i < ").append(childGroup.getOccursCount()).append("; i++) {\n");
+                    sb.append(indent).append("    ").append(nestedClassName).append(".").append(nestedClassName)
+                            .append("Builder itemBuilder = ").append(nestedClassName).append(".builder();\n");
+
+                    generateDeserializeFields(sb, childGroup, "itemBuilder", indent + "    ");
+
+                    sb.append(indent).append("    ").append(listVar).append(".add(itemBuilder.build());\n");
+                    sb.append(indent).append("}\n");
+                    sb.append(indent).append(builderRef).append(".").append(groupFieldName).append("(").append(listVar).append(");\n\n");
+                } else {
+                    // Regular group - inline
+                    generateDeserializeFields(sb, childGroup, builderRef, indent);
+                }
             }
         }
     }
@@ -937,39 +1155,59 @@ public class ProjectGenerator {
         int byteLen = field.getByteLength();
         PictureClause pic = field.getPicture();
         UsageType usage = field.getUsage();
-        String setter = builderRef + "." + toCamelCase(getJavaFieldName(field));
+        String fieldName = getJavaFieldName(field);
         String javaType = getJavaType(field);
-        
+
+        // Deserialize value
+        String deserializedValue = getDeserializeExpression(field, byteLen, pic, usage, javaType);
+
+        // Set on builder
+        sb.append(indent).append(builderRef).append(".").append(fieldName)
+                .append("(").append(deserializedValue).append(");\n");
+        sb.append(indent).append("offset += ").append(byteLen).append(";\n\n");
+    }
+
+    private void generateFieldDeserializeToVariable(StringBuilder sb, FieldNode field, String listVar, String indent) {
+        int byteLen = field.getByteLength();
+        PictureClause pic = field.getPicture();
+        UsageType usage = field.getUsage();
+        String javaType = getJavaType(field);
+
+        // Deserialize value
+        String deserializedValue = getDeserializeExpression(field, byteLen, pic, usage, javaType);
+
+        // Add to list
+        sb.append(indent).append(listVar).append(".add(").append(deserializedValue).append(");\n");
+        sb.append(indent).append("offset += ").append(byteLen).append(";\n");
+    }
+
+    private String getDeserializeExpression(FieldNode field, int byteLen, PictureClause pic, UsageType usage, String javaType) {
+        // Handle enums
+        if (field.hasEnum88Values()) {
+            String enumType = toPascalCase(field.getName()) + "Enum";
+            return enumType + ".fromValue(EbcdicUtils.ebcdicToString(bytes, offset, " + byteLen + "))";
+        }
+
         if (pic.isAlphanumeric()) {
-            sb.append(indent).append(setter).append("(EbcdicUtils.ebcdicToString(bytes, offset, ")
-                    .append(byteLen).append("));\n");
+            return "EbcdicUtils.ebcdicToString(bytes, offset, " + byteLen + ")";
         } else if (usage == UsageType.PACKED_DECIMAL) {
-            sb.append(indent).append(setter).append("(EbcdicUtils.unpackDecimal(bytes, offset, ")
-                    .append(byteLen).append(", ").append(pic.getDecimalDigits()).append("));\n");
+            return "EbcdicUtils.unpackDecimal(bytes, offset, " + byteLen + ", " + pic.getDecimalDigits() + ")";
         } else if (usage == UsageType.BINARY || usage == UsageType.COMP_5) {
             if (javaType.equals("Integer")) {
-                sb.append(indent).append(setter).append("(EbcdicUtils.binaryToInt(bytes, offset, ")
-                        .append(byteLen).append("));\n");
+                return "EbcdicUtils.binaryToInt(bytes, offset, " + byteLen + ")";
             } else {
-                sb.append(indent).append(setter).append("((long) EbcdicUtils.binaryToInt(bytes, offset, ")
-                        .append(byteLen).append("));\n");
+                return "(long) EbcdicUtils.binaryToInt(bytes, offset, " + byteLen + ")";
             }
         } else {
             // Zoned decimal or display numeric
             if (javaType.contains("BigDecimal")) {
-                sb.append(indent).append(setter).append("(new java.math.BigDecimal(EbcdicUtils.unzonedDecimal(bytes, offset, ")
-                        .append(byteLen).append(")));\n");
+                return "new java.math.BigDecimal(EbcdicUtils.unzonedDecimal(bytes, offset, " + byteLen + "))";
             } else if (javaType.equals("Integer") || javaType.equals("Long")) {
-                sb.append(indent).append(setter).append("(").append(javaType)
-                        .append(".valueOf(EbcdicUtils.unzonedDecimal(bytes, offset, ")
-                        .append(byteLen).append(")));\n");
+                return javaType + ".valueOf(EbcdicUtils.unzonedDecimal(bytes, offset, " + byteLen + "))";
             } else {
-                sb.append(indent).append(setter).append("(EbcdicUtils.ebcdicToString(bytes, offset, ")
-                        .append(byteLen).append("));\n");
+                return "EbcdicUtils.ebcdicToString(bytes, offset, " + byteLen + ")";
             }
         }
-        
-        sb.append(indent).append("offset += ").append(byteLen).append(";\n\n");
     }
     
     private void generateCamelRoutes(Path projectDir) throws IOException {
