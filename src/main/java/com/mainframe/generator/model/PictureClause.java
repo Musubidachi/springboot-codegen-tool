@@ -149,16 +149,24 @@ public class PictureClause {
         return switch (usage) {
             case DISPLAY -> totalLength + (signed ? 0 : 0); // Sign embedded in last digit for zoned
             case BINARY, COMP_5 -> getBinaryByteLength();
-            case PACKED_DECIMAL -> (totalLength / 2) + 1; // (digits + 1) / 2 rounded up
+            case PACKED_DECIMAL -> (totalLength + 1) / 2; // Standard COMP-3 formula: (digits + 1) / 2
             case COMP_1 -> 4; // Single precision float
             case COMP_2 -> 8; // Double precision float
         };
     }
 
+    /**
+     * Calculate binary byte length according to IBM Enterprise COBOL rules.
+     * 1-4 digits  -> 2 bytes (halfword)
+     * 5-9 digits  -> 4 bytes (fullword)
+     * 10-18 digits -> 8 bytes (doubleword)
+     */
     public int getBinaryByteLength() {
         int digits = integerDigits + decimalDigits;
-        if (digits <= 4) return 2;
-        if (digits <= 9) return 4;
+        if (digits >= 1 && digits <= 4) return 2;
+        if (digits >= 5 && digits <= 9) return 4;
+        if (digits >= 10 && digits <= 18) return 8;
+        // Handle edge cases (> 18 digits uses 8 bytes, may overflow)
         return 8;
     }
 }

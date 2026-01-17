@@ -72,16 +72,25 @@ class PictureClauseTest {
         "X(10), DISPLAY, 10",
         "9(5), DISPLAY, 5",
         "S9(7)V99, DISPLAY, 9",
+        // IBM Enterprise COBOL BINARY sizing: 1-4 digits=2, 5-9 digits=4, 10-18 digits=8
+        "9(1), BINARY, 2",
         "9(4), BINARY, 2",
+        "9(5), BINARY, 4",
         "9(9), BINARY, 4",
+        "9(10), BINARY, 8",
         "9(18), BINARY, 8",
+        // COMP-3 packed decimal: (digits + 1) / 2
+        "9(1), PACKED_DECIMAL, 1",
+        "9(3), PACKED_DECIMAL, 2",
+        "9(5), PACKED_DECIMAL, 3",
         "S9(9)V99, PACKED_DECIMAL, 6",
-        "S9(7)V99, PACKED_DECIMAL, 5"
+        "S9(7)V99, PACKED_DECIMAL, 5",
+        "9(15), PACKED_DECIMAL, 8"
     })
     void testByteLengthCalculation(String pic, String usage, int expectedLength) {
         PictureClause clause = PictureClause.parse(pic);
         UsageType usageType = UsageType.valueOf(usage);
-        
+
         assertThat(clause.getByteLength(usageType)).isEqualTo(expectedLength);
     }
 

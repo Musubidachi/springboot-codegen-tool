@@ -55,15 +55,37 @@ public class GroupNode extends CopybookNode {
     
     public int calculateByteLength() {
         int total = 0;
+        int maxRedefineLength = 0;
+
         for (CopybookNode child : children) {
+            boolean isRedefine = (child instanceof GroupNode group && group.isRedefines()) ||
+                    (child instanceof FieldNode field && field.isRedefines());
+
+            int childLength = 0;
             if (child instanceof GroupNode group) {
-                // group.calculateByteLength() already accounts for that group's own occursCount,
-                // so just add it once (don't multiply again here).
-                total += group.calculateByteLength();
+                childLength = group.calculateByteLength();
             } else if (child instanceof FieldNode field) {
-                total += field.getByteLength() * field.getOccursCount();
+                childLength = field.getByteLength() * field.getOccursCount();
+            }
+
+            if (isRedefine) {
+                // Track max length among redefine siblings
+                maxRedefineLength = Math.max(maxRedefineLength, childLength);
+            } else {
+                // Add previous redefine max if any
+                if (maxRedefineLength > 0) {
+                    total += maxRedefineLength;
+                    maxRedefineLength = 0;
+                }
+                total += childLength;
             }
         }
+
+        // Handle trailing redefines
+        if (maxRedefineLength > 0) {
+            total += maxRedefineLength;
+        }
+
         // Multiply by this group's occursCount only once
         return total * occursCount;
     }

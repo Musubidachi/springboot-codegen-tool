@@ -69,47 +69,68 @@ public class CopybookTokenizer {
     
     /**
      * Preprocess the source to handle COBOL-specific formatting.
+     * Handles sequence numbers, column 7 indicators, and line continuation.
      */
     private String preprocessSource(String src) {
         StringBuilder sb = new StringBuilder();
         String[] lines = src.split("\n");
-        
+        boolean previousWasContinuation = false;
+
         for (String lineContent : lines) {
             // Handle COBOL column conventions:
             // Columns 1-6: Sequence number (ignored)
-            // Column 7: Indicator (* = comment, - = continuation)
+            // Column 7: Indicator (* = comment, - = continuation, / = page eject comment, D = debug)
             // Columns 8-72: Program area
-            // Columns 73-80: Identification (ignored)
-            
+            // Columns 73-80: Identification area (ignored)
+
             if (lineContent.length() > 6) {
-                char indicator = lineContent.length() > 6 ? lineContent.charAt(6) : ' ';
-                
-                // Skip comment lines
+                char indicator = lineContent.charAt(6);
+
+                // Skip comment lines (* or /)
                 if (indicator == '*' || indicator == '/') {
                     continue;
                 }
-                
+
+                // Skip debug lines (D in column 7) - treat as comments by default
+                if (indicator == 'D' || indicator == 'd') {
+                    continue;
+                }
+
                 // Get program area (columns 8-72)
                 int start = Math.min(7, lineContent.length());
                 int end = Math.min(72, lineContent.length());
-                
+
                 if (start < lineContent.length()) {
                     String programArea = lineContent.substring(start, end);
-                    
+
                     // Handle continuation
                     if (indicator == '-') {
-                        // Remove leading spaces and append to previous line
+                        // Continuation line: remove the last newline if we just added one
+                        // and append this line stripped of leading spaces
+                        if (sb.length() > 0 && sb.charAt(sb.length() - 1) == '\n') {
+                            sb.setLength(sb.length() - 1);
+                        }
                         sb.append(programArea.stripLeading());
+                        previousWasContinuation = true;
                     } else {
+                        // Normal line
                         sb.append(programArea);
+                        previousWasContinuation = false;
                     }
                 }
+            } else if (lineContent.trim().isEmpty()) {
+                // Empty or very short line - skip
+                continue;
             } else {
+                // Line without full column layout - append as-is
                 sb.append(lineContent);
+                previousWasContinuation = false;
             }
+
+            // Add newline (will be removed on next iteration if continuation follows)
             sb.append("\n");
         }
-        
+
         return sb.toString();
     }
     
