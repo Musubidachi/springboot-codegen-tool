@@ -33,7 +33,7 @@ public class GenerateCommand implements Callable<Integer> {
     @Option(names = {"--project-name", "-n"}, description = "Name of the generated project")
     private String projectName;
 
-    @Option(names = {"--copybook-dir", "-c"}, required = true, description = "Directory containing COBOL copybook files")
+    @Option(names = {"--copybook-dir", "-c"}, description = "Directory containing COBOL copybook files (for heuristic mode)")
     private Path copybookDir;
 
     @Option(names = {"--mapping-doc", "-m"}, description = "Path to field mapping document")
@@ -41,6 +41,28 @@ public class GenerateCommand implements Callable<Integer> {
 
     @Option(names = {"--external-copybook-dirs", "-e"}, description = "Additional directories for resolving COPY statements (comma-separated)")
     private String externalCopybookDirs;
+
+    // New folder-based copybook selection options
+    @Option(names = {"--request-copybook-dir"}, description = "Directory containing request-related copybooks")
+    private Path requestCopybookDir;
+
+    @Option(names = {"--response-copybook-dir"}, description = "Directory containing response-related copybooks")
+    private Path responseCopybookDir;
+
+    @Option(names = {"--shared-copybook-dir"}, description = "Directory containing shared copybooks (common to both)")
+    private Path sharedCopybookDir;
+
+    @Option(names = {"--request-root"}, description = "Identifies which copybook in request set is the root for {ProgramId}Request")
+    private String requestRoot;
+
+    @Option(names = {"--response-root"}, description = "Identifies which copybook in response set is the root for {ProgramId}Response")
+    private String responseRoot;
+
+    @Option(names = {"--infer-inheritance"}, description = "Enable inheritance factoring when DTO structure A is a prefix of B")
+    private boolean inferInheritance;
+
+    @Option(names = {"--test-mode"}, description = "Generate DTO+serializer+tests for all parsed copybooks (torture suite)")
+    private boolean testMode;
 
     @Option(names = {"--program-id", "-p"}, defaultValue = "MAINFRAME-PROG", description = "Mainframe program ID")
     private String programId;
@@ -84,10 +106,34 @@ public class GenerateCommand implements Callable<Integer> {
                 }
             }
 
-            // Validate copybook directory
-            if (!Files.exists(copybookDir) || !Files.isDirectory(copybookDir)) {
-                log.error("Copybook directory does not exist or is not a directory: {}", copybookDir);
-                return 1;
+            // Validate copybook directories
+            boolean usingFolderBasedSelection = requestCopybookDir != null || responseCopybookDir != null;
+
+            if (!usingFolderBasedSelection) {
+                // Heuristic mode: require copybookDir
+                if (copybookDir == null) {
+                    log.error("Either --copybook-dir or --request-copybook-dir/--response-copybook-dir must be provided");
+                    return 1;
+                }
+                if (!Files.exists(copybookDir) || !Files.isDirectory(copybookDir)) {
+                    log.error("Copybook directory does not exist or is not a directory: {}", copybookDir);
+                    return 1;
+                }
+                log.warn("Using heuristic mode for copybook selection. Consider using --request-copybook-dir and --response-copybook-dir for explicit control.");
+            } else {
+                // Folder-based mode: validate request/response directories
+                if (requestCopybookDir != null && (!Files.exists(requestCopybookDir) || !Files.isDirectory(requestCopybookDir))) {
+                    log.error("Request copybook directory does not exist or is not a directory: {}", requestCopybookDir);
+                    return 1;
+                }
+                if (responseCopybookDir != null && (!Files.exists(responseCopybookDir) || !Files.isDirectory(responseCopybookDir))) {
+                    log.error("Response copybook directory does not exist or is not a directory: {}", responseCopybookDir);
+                    return 1;
+                }
+                if (sharedCopybookDir != null && (!Files.exists(sharedCopybookDir) || !Files.isDirectory(sharedCopybookDir))) {
+                    log.error("Shared copybook directory does not exist or is not a directory: {}", sharedCopybookDir);
+                    return 1;
+                }
             }
 
             // Validate mapping doc if provided
@@ -131,6 +177,13 @@ public class GenerateCommand implements Callable<Integer> {
                     .outputDir(outputDir)
                     .force(force)
                     .skipTests(skipTests)
+                    .requestCopybookDir(requestCopybookDir)
+                    .responseCopybookDir(responseCopybookDir)
+                    .sharedCopybookDir(sharedCopybookDir)
+                    .requestRoot(requestRoot)
+                    .responseRoot(responseRoot)
+                    .inferInheritance(inferInheritance)
+                    .testMode(testMode)
                     .build();
 
             log.info("=================================================");
@@ -206,6 +259,19 @@ public class GenerateCommand implements Callable<Integer> {
         log.info("DTO Classes Generated: {}", result.getDtoClassesGenerated());
         log.info("Request Byte Length: {} bytes", result.getRequestByteLength());
         log.info("Response Byte Length: {} bytes", result.getResponseByteLength());
+
+        // Show new folder-based selection stats if applicable
+        if (result.getRequestModelsCount() > 0 || result.getResponseModelsCount() > 0 || result.getSharedModelsCount() > 0) {
+            log.info("");
+            log.info("Folder-based Selection Summary:");
+            log.info("  Request Models: {}", result.getRequestModelsCount());
+            log.info("  Response Models: {}", result.getResponseModelsCount());
+            log.info("  Shared Models: {}", result.getSharedModelsCount());
+            log.info("  Serializers Generated: {}", result.getSerializersGenerated());
+            if (result.getTortureTestsGenerated() > 0) {
+                log.info("  Torture Tests Generated: {}", result.getTortureTestsGenerated());
+            }
+        }
         log.info("");
         log.info("Validation Constraints Summary:");
         log.info("  @NotNull: {}", result.getNotNullCount());
