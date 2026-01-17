@@ -883,6 +883,9 @@ public class ProjectGenerator {
 
                     // Avoid duplicate generation
                     if (generated.contains(nestedClassName)) {
+                        logger.warn("Skipping duplicate nested class generation: {} for group {} (already generated). " +
+                                "This may indicate a naming collision in the copybook structure.",
+                                nestedClassName, group.getName());
                         continue;
                     }
                     generated.add(nestedClassName);
@@ -941,6 +944,8 @@ public class ProjectGenerator {
      * Generate fields for DTO class from a list of nodes.
      */
     private void generateDtoFields(StringBuilder sb, List<CopybookNode> nodes, String indent, Set<String> nestedClassNames) {
+        Set<String> usedFieldNames = new HashSet<>();
+
         for (CopybookNode node : nodes) {
             if (node instanceof FieldNode field) {
                 if (field.isFiller() || mappingDoc.shouldIgnore(field.getName())) {
@@ -962,6 +967,14 @@ public class ProjectGenerator {
                 String javaType = getJavaType(field);
                 String fieldName = getJavaFieldName(field);
 
+                // Check for field name collisions
+                if (!usedFieldNames.add(fieldName)) {
+                    logger.warn("Duplicate field name detected: '{}' (from COBOL field '{}') in DTO. " +
+                            "This may cause compilation errors. Consider using field mapping to rename.",
+                            fieldName, field.getName());
+                }
+
+
                 if (field.getOccursCount() > 1) {
                     sb.append(indent).append("@Builder.Default\n");
                     sb.append(indent).append("private List<").append(javaType).append("> ")
@@ -981,6 +994,13 @@ public class ProjectGenerator {
                     // OCCURS group - generate List<NestedClass>
                     String nestedClassName = toPascalCase(group.getName()) + "Item";
                     String fieldName = toCamelCase(group.getName());
+
+                    // Check for field name collisions
+                    if (!usedFieldNames.add(fieldName)) {
+                        logger.warn("Duplicate field name detected: '{}' (from COBOL group '{}') in DTO. " +
+                                "This may cause compilation errors.",
+                                fieldName, group.getName());
+                    }
 
                     sb.append(indent).append("@Valid\n");
                     sb.append(indent).append("@NotNull\n");
@@ -1041,36 +1061,61 @@ public class ProjectGenerator {
     
     private void generateEnumClasses(Path projectDir) throws IOException {
         String basePackagePath = config.getBasePackage().replace('.', '/');
-        
+        Set<String> generatedEnumClasses = new HashSet<>();
+
         for (CopybookModel model : copybookModels) {
             for (FieldNode field : model.getAllFields()) {
                 if (field.hasEnum88Values()) {
+                    String enumName = toPascalCase(field.getName()) + "Enum";
+
+                    // Check for enum class name collisions
+                    if (!generatedEnumClasses.add(enumName)) {
+                        logger.warn("Skipping duplicate enum class generation: {} for field {} in copybook {}. " +
+                                "This may indicate multiple fields with the same name across copybooks.",
+                                enumName, field.getName(), model.getName());
+                        continue;
+                    }
+
                     Path enumFile = projectDir.resolve(
-                            "src/main/java/" + basePackagePath + "/model/" +
-                                    toPascalCase(field.getName()) + "Enum.java"
+                            "src/main/java/" + basePackagePath + "/model/" + enumName + ".java"
                     );
-                    
+
                     StringBuilder sb = new StringBuilder();
                     sb.append("package ").append(config.getBasePackage()).append(".model;\n\n");
                     sb.append("import lombok.Getter;\n");
                     sb.append("import lombok.RequiredArgsConstructor;\n\n");
-                    
-                    String enumName = toPascalCase(field.getName()) + "Enum";
+
                     sb.append("/**\n");
                     sb.append(" * Generated enum from 88-level values of ").append(field.getName()).append("\n");
                     sb.append(" */\n");
                     sb.append("@Getter\n");
                     sb.append("@RequiredArgsConstructor\n");
                     sb.append("public enum ").append(enumName).append(" {\n");
-                    
+
                     List<Enum88Node> enums = field.getEnum88Values();
-                    for (int i = 0; i < enums.size(); i++) {
-                        Enum88Node enum88 = enums.get(i);
+                    Set<String> usedConstantNames = new HashSet<>();
+                    List<String> validConstants = new ArrayList<>();
+
+                    // First pass: collect valid constant names and check for collisions
+                    for (Enum88Node enum88 : enums) {
                         String constName = enum88.toJavaEnumConstant();
                         String value = enum88.getPrimaryValue();
-                        
-                        sb.append("    ").append(constName).append("(\"").append(value).append("\")");
-                        sb.append(i < enums.size() - 1 ? ",\n" : ";\n\n");
+
+                        // Check for enum constant name collisions
+                        if (!usedConstantNames.add(constName)) {
+                            logger.warn("Duplicate enum constant name detected: {} in enum {} (from 88-level '{}' with value '{}'). " +
+                                    "This constant will be skipped.",
+                                    constName, enumName, enum88.getName(), value);
+                            continue;
+                        }
+
+                        validConstants.add(constName + "(\"" + value + "\")");
+                    }
+
+                    // Second pass: generate enum constants
+                    for (int i = 0; i < validConstants.size(); i++) {
+                        sb.append("    ").append(validConstants.get(i));
+                        sb.append(i < validConstants.size() - 1 ? ",\n" : ";\n\n");
                     }
                     
                     sb.append("    private final String value;\n\n");
@@ -1300,19 +1345,47 @@ public class ProjectGenerator {
                     
                     public static String unzonedDecimal(byte[] bytes, int offset, int length) {
                         StringBuilder sb = new StringBuilder();
-                        
+
                         for (int i = 0; i < length; i++) {
                             int b = bytes[offset + i] & 0xFF;
                             int digit = b & 0x0F;
                             sb.append((char) ('0' + digit));
                         }
-                        
+
                         // Check sign from last byte
                         int lastZone = (bytes[offset + length - 1] >> 4) & 0x0F;
                         boolean negative = (lastZone == 0x0D || lastZone == 0x0B);
-                        
+
                         String result = sb.toString().replaceFirst("^0+(?!$)", "");
                         return negative ? "-" + result : result;
+                    }
+
+                    /**
+                     * Convert float to 4-byte array (COMP-1, IEEE 754 single precision, big-endian).
+                     */
+                    public static byte[] floatToBytes(float value) {
+                        return ByteBuffer.allocate(4).putFloat(value).array();
+                    }
+
+                    /**
+                     * Convert 4-byte array to float (COMP-1, IEEE 754 single precision, big-endian).
+                     */
+                    public static float bytesToFloat(byte[] bytes, int offset) {
+                        return ByteBuffer.wrap(bytes, offset, 4).getFloat();
+                    }
+
+                    /**
+                     * Convert double to 8-byte array (COMP-2, IEEE 754 double precision, big-endian).
+                     */
+                    public static byte[] doubleToBytes(double value) {
+                        return ByteBuffer.allocate(8).putDouble(value).array();
+                    }
+
+                    /**
+                     * Convert 8-byte array to double (COMP-2, IEEE 754 double precision, big-endian).
+                     */
+                    public static double bytesToDouble(byte[] bytes, int offset) {
+                        return ByteBuffer.wrap(bytes, offset, 8).getDouble();
                     }
                 }
                 """, config.getBasePackage(), config.getEncoding().toUpperCase());
@@ -1386,16 +1459,19 @@ public class ProjectGenerator {
         }
     }
     
-    private void generateConcreteSerializer(Path projectDir, CopybookModel copybook, String suffix) 
+    private void generateConcreteSerializer(Path projectDir, CopybookModel copybook, String suffix)
             throws IOException {
         String basePackagePath = config.getBasePackage().replace('.', '/');
         String className = toPascalCase(config.getProgramId()) + suffix + "Serializer";
         String dtoClassName = toPascalCase(config.getProgramId()) + suffix;
-        
+
+        // Validate ODO dependencies before generating code
+        validateOdoDependencies(copybook.getRootGroup(), new HashSet<>(), copybook.getName());
+
         Path serializerFile = projectDir.resolve(
                 "src/main/java/" + basePackagePath + "/util/" + className + ".java"
         );
-        
+
         StringBuilder sb = new StringBuilder();
         sb.append("package ").append(config.getBasePackage()).append(".util;\n\n");
         sb.append("import ").append(config.getBasePackage()).append(".model.")
@@ -1466,6 +1542,9 @@ public class ProjectGenerator {
             throws IOException {
         String basePackagePath = config.getBasePackage().replace('.', '/');
         String serializerClassName = dtoClassName + "Serializer";
+
+        // Validate ODO dependencies before generating code
+        validateOdoDependencies(copybook.getRootGroup(), new HashSet<>(), copybook.getName());
 
         // Determine serializer package based on subPackage
         String serializerPackage = config.getBasePackage() + ".util." + subPackage;
@@ -1679,13 +1758,20 @@ public class ProjectGenerator {
             sb.append(indent).append("System.arraycopy(EbcdicUtils.stringToEbcdic(")
                     .append(enumValueExpr).append(", ")
                     .append(byteLen).append("), 0, result, offset, ").append(byteLen).append(");\n");
-        } else if (pic.isAlphanumeric() || (pic.isNumeric() && usage == UsageType.DISPLAY && !pic.isSigned())) {
-            // String field - EBCDIC
-            sb.append(indent).append("System.arraycopy(EbcdicUtils.stringToEbcdic(")
-                    .append(valueExpr).append(" != null ? ").append(valueExpr).append(".toString() : \"\", ")
-                    .append(byteLen).append("), 0, result, offset, ").append(byteLen).append(");\n");
+        } else if (usage == UsageType.COMP_1) {
+            // COMP-1: IEEE 754 single precision float (4 bytes)
+            String floatValue = valueExpr + " != null ? " + valueExpr + " : 0.0f";
+            sb.append(indent).append("System.arraycopy(EbcdicUtils.floatToBytes(")
+                    .append(floatValue).append("), 0, result, offset, ")
+                    .append(byteLen).append(");\n");
+        } else if (usage == UsageType.COMP_2) {
+            // COMP-2: IEEE 754 double precision float (8 bytes)
+            String doubleValue = valueExpr + " != null ? " + valueExpr + " : 0.0";
+            sb.append(indent).append("System.arraycopy(EbcdicUtils.doubleToBytes(")
+                    .append(doubleValue).append("), 0, result, offset, ")
+                    .append(byteLen).append(");\n");
         } else if (usage == UsageType.PACKED_DECIMAL) {
-            // Packed decimal
+            // Packed decimal (COMP-3)
             sb.append(indent).append("System.arraycopy(EbcdicUtils.packedDecimal(")
                     .append(valueExpr).append(", ").append(byteLen).append("), 0, result, offset, ")
                     .append(byteLen).append(");\n");
@@ -1704,12 +1790,25 @@ public class ProjectGenerator {
             sb.append(indent).append("System.arraycopy(EbcdicUtils.intToBinary(")
                     .append(valueToSerialize).append(", ")
                     .append(byteLen).append("), 0, result, offset, ").append(byteLen).append(");\n");
-        } else {
-            // Zoned decimal
+        } else if (pic != null && (pic.isAlphanumeric() || (pic.isNumeric() && usage == UsageType.DISPLAY && !pic.isSigned()))) {
+            // String field - EBCDIC
+            sb.append(indent).append("System.arraycopy(EbcdicUtils.stringToEbcdic(")
+                    .append(valueExpr).append(" != null ? ").append(valueExpr).append(".toString() : \"\", ")
+                    .append(byteLen).append("), 0, result, offset, ").append(byteLen).append(");\n");
+        } else if (pic != null) {
+            // Zoned decimal - requires PictureClause for sign information
             sb.append(indent).append("System.arraycopy(EbcdicUtils.zonedDecimal(")
                     .append(valueExpr).append(" != null ? ").append(valueExpr).append(".toString() : \"0\", ")
                     .append(byteLen).append(", ").append(pic.isSigned()).append("), 0, result, offset, ")
                     .append(byteLen).append(");\n");
+        } else {
+            // No PictureClause and unsupported usage - fail with clear error
+            String fieldName = field.getName();
+            String errorMsg = String.format(
+                "Cannot serialize field %s (%s): missing PIC clause and unsupported usage type",
+                fieldName, usage
+            );
+            sb.append(indent).append("throw new IllegalStateException(\"").append(errorMsg).append("\");\n");
         }
 
         sb.append(indent).append("offset += ").append(byteLen).append(";\n\n");
@@ -1878,11 +1977,28 @@ public class ProjectGenerator {
             return enumType + ".fromValue(EbcdicUtils.ebcdicToString(bytes, offset, " + byteLen + "))";
         }
 
-        if (pic.isAlphanumeric()) {
-            return "EbcdicUtils.ebcdicToString(bytes, offset, " + byteLen + ")";
-        } else if (usage == UsageType.PACKED_DECIMAL) {
+        // Handle COMP-1 (float)
+        if (usage == UsageType.COMP_1) {
+            return "EbcdicUtils.bytesToFloat(bytes, offset)";
+        }
+
+        // Handle COMP-2 (double)
+        if (usage == UsageType.COMP_2) {
+            return "EbcdicUtils.bytesToDouble(bytes, offset)";
+        }
+
+        // Handle packed decimal (COMP-3)
+        if (usage == UsageType.PACKED_DECIMAL) {
+            if (pic == null) {
+                throw new IllegalStateException(
+                    "Cannot deserialize field " + field.getName() + " (COMP-3): missing PIC clause for decimal scale"
+                );
+            }
             return "EbcdicUtils.unpackDecimal(bytes, offset, " + byteLen + ", " + pic.getDecimalDigits() + ")";
-        } else if (usage == UsageType.BINARY || usage == UsageType.COMP_5) {
+        }
+
+        // Handle binary (COMP/COMP-5)
+        if (usage == UsageType.BINARY || usage == UsageType.COMP_5) {
             if (javaType.equals("Short")) {
                 return "(short) EbcdicUtils.binaryToInt(bytes, offset, " + byteLen + ")";
             } else if (javaType.equals("Integer")) {
@@ -1892,15 +2008,27 @@ public class ProjectGenerator {
             } else {
                 return "EbcdicUtils.binaryToInt(bytes, offset, " + byteLen + ")";
             }
+        }
+
+        // For the remaining types, PictureClause is required
+        if (pic == null) {
+            throw new IllegalStateException(
+                "Cannot deserialize field " + field.getName() + " (" + usage + "): missing PIC clause"
+            );
+        }
+
+        // Handle alphanumeric
+        if (pic.isAlphanumeric()) {
+            return "EbcdicUtils.ebcdicToString(bytes, offset, " + byteLen + ")";
+        }
+
+        // Handle zoned decimal or display numeric
+        if (javaType.contains("BigDecimal")) {
+            return "new BigDecimal(EbcdicUtils.unzonedDecimal(bytes, offset, " + byteLen + "))";
+        } else if (javaType.equals("Integer") || javaType.equals("Long") || javaType.equals("Short")) {
+            return javaType + ".valueOf(EbcdicUtils.unzonedDecimal(bytes, offset, " + byteLen + "))";
         } else {
-            // Zoned decimal or display numeric
-            if (javaType.contains("BigDecimal")) {
-                return "new BigDecimal(EbcdicUtils.unzonedDecimal(bytes, offset, " + byteLen + "))";
-            } else if (javaType.equals("Integer") || javaType.equals("Long") || javaType.equals("Short")) {
-                return javaType + ".valueOf(EbcdicUtils.unzonedDecimal(bytes, offset, " + byteLen + "))";
-            } else {
-                return "EbcdicUtils.ebcdicToString(bytes, offset, " + byteLen + ")";
-            }
+            return "EbcdicUtils.ebcdicToString(bytes, offset, " + byteLen + ")";
         }
     }
     
@@ -3007,5 +3135,37 @@ public class ProjectGenerator {
             return input;
         }
         return Character.toUpperCase(input.charAt(0)) + input.substring(1);
+    }
+
+    /**
+     * Validates OCCURS DEPENDING ON references to ensure they don't reference
+     * fields that appear later in the structure (forward references).
+     */
+    private void validateOdoDependencies(GroupNode group, Set<String> seenFields, String copybookName) {
+        for (CopybookNode child : group.getChildren()) {
+            if (child instanceof FieldNode field) {
+                String occursDepending = field.getOccursDepending();
+                if (occursDepending != null && !occursDepending.isBlank()) {
+                    if (!seenFields.contains(occursDepending.toUpperCase())) {
+                        logger.warn("Field {} in copybook {} has OCCURS DEPENDING ON {} which may not have been deserialized yet. " +
+                                "Ensure the depending field appears before the array in the COBOL structure.",
+                                field.getName(), copybookName, occursDepending);
+                    }
+                }
+                seenFields.add(field.getName().toUpperCase());
+            } else if (child instanceof GroupNode childGroup) {
+                String occursDepending = childGroup.getOccursDepending();
+                if (occursDepending != null && !occursDepending.isBlank()) {
+                    if (!seenFields.contains(occursDepending.toUpperCase())) {
+                        logger.warn("Group {} in copybook {} has OCCURS DEPENDING ON {} which may not have been deserialized yet. " +
+                                "Ensure the depending field appears before the array in the COBOL structure.",
+                                childGroup.getName(), copybookName, occursDepending);
+                    }
+                }
+                // Recurse into child groups
+                validateOdoDependencies(childGroup, seenFields, copybookName);
+                seenFields.add(childGroup.getName().toUpperCase());
+            }
+        }
     }
 }
