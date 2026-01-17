@@ -1225,7 +1225,7 @@ public class ProjectGenerator {
                             // Validate digit nibbles (0-9)
                             if (highNibble > 9 || lowNibble > 9) {
                                 throw new IllegalArgumentException(
-                                    String.format("Invalid packed decimal digit at offset %d: 0x%02X", offset + i, b));
+                                    String.format("Invalid packed decimal digit at offset %%d: 0x%%02X", offset + i, b));
                             }
 
                             sb.append((char) ('0' + highNibble));
@@ -1240,7 +1240,7 @@ public class ProjectGenerator {
                         // Validate last digit
                         if (lastDigit > 9) {
                             throw new IllegalArgumentException(
-                                String.format("Invalid packed decimal digit at offset %d: 0x%02X", offset + length - 1, lastByte));
+                                String.format("Invalid packed decimal digit at offset %%d: 0x%%02X", offset + length - 1, lastByte));
                         }
 
                         sb.append((char) ('0' + lastDigit));
@@ -1253,7 +1253,7 @@ public class ProjectGenerator {
                             case 0x0C, 0x0F, 0x0A, 0x0E -> negative = false;  // Positive
                             case 0x0D, 0x0B -> negative = true;                // Negative
                             default -> throw new IllegalArgumentException(
-                                String.format("Invalid packed decimal sign nibble at offset %d: 0x%X", offset + length - 1, sign));
+                                String.format("Invalid packed decimal sign nibble at offset %%d: 0x%%X", offset + length - 1, sign));
                         }
 
                         BigDecimal result = new BigDecimal(sb.toString());
