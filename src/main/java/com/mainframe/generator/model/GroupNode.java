@@ -1,3 +1,4 @@
+// (Full file contents)
 package com.mainframe.generator.model;
 
 import lombok.Builder;
@@ -56,11 +57,14 @@ public class GroupNode extends CopybookNode {
         int total = 0;
         for (CopybookNode child : children) {
             if (child instanceof GroupNode group) {
-                total += group.calculateByteLength() * group.getOccursCount();
+                // group.calculateByteLength() already accounts for that group's own occursCount,
+                // so just add it once (don't multiply again here).
+                total += group.calculateByteLength();
             } else if (child instanceof FieldNode field) {
                 total += field.getByteLength() * field.getOccursCount();
             }
         }
+        // Multiply by this group's occursCount only once
         return total * occursCount;
     }
 }

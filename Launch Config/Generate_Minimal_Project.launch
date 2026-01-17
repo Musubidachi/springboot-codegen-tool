@@ -1,11 +1,21 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <launchConfiguration type="org.eclipse.jdt.launching.localJavaApplication">
-    <stringAttribute key="org.eclipse.jdt.launching.MAIN_TYPE" value="com.mainframe.generator.GeneratorApplication"/>
-    <stringAttribute key="org.eclipse.jdt.launching.MODULE_NAME" value="copybook-spring-camel-gen"/>
-    <stringAttribute key="org.eclipse.jdt.launching.PROJECT_ATTR" value="copybook-spring-camel-gen"/>
-    <stringAttribute key="org.eclipse.jdt.launching.PROGRAM_ARGUMENTS" value="--project-name MinimalAPI&#10;--copybook-dir ${project_loc}/sample-copybooks&#10;--program-id MINIMAL&#10;--output-dir ${project_loc}/generated-projects&#10;--force&#10;--skip-tests"/>
-    <stringAttribute key="org.eclipse.jdt.launching.VM_ARGUMENTS" value=""/>
-    <stringAttribute key="org.eclipse.jdt.launching.WORKING_DIRECTORY" value="${project_loc}"/>
+    <booleanAttribute key="org.eclipse.debug.core.ATTR_FORCE_SYSTEM_CONSOLE_ENCODING" value="false"/>
+    <listAttribute key="org.eclipse.debug.core.MAPPED_RESOURCE_PATHS">
+        <listEntry value="/springboot-codegen-tool/src/main/java/com/mainframe/generator/GeneratorApplication.java"/>
+    </listAttribute>
+    <listAttribute key="org.eclipse.debug.core.MAPPED_RESOURCE_TYPES">
+        <listEntry value="1"/>
+    </listAttribute>
+    <booleanAttribute key="org.eclipse.jdt.launching.ATTR_ATTR_USE_ARGFILE" value="false"/>
+    <booleanAttribute key="org.eclipse.jdt.launching.ATTR_SHOW_CODEDETAILS_IN_EXCEPTION_MESSAGES" value="true"/>
     <booleanAttribute key="org.eclipse.jdt.launching.ATTR_USE_CLASSPATH_ONLY_JAR" value="false"/>
     <booleanAttribute key="org.eclipse.jdt.launching.ATTR_USE_START_ON_FIRST_THREAD" value="true"/>
+    <stringAttribute key="org.eclipse.jdt.launching.CLASSPATH_PROVIDER" value="org.eclipse.m2e.launchconfig.classpathProvider"/>
+    <stringAttribute key="org.eclipse.jdt.launching.MAIN_TYPE" value="com.mainframe.generator.GeneratorApplication"/>
+    <stringAttribute key="org.eclipse.jdt.launching.MODULE_NAME" value="springboot-codegen-tool"/>
+    <stringAttribute key="org.eclipse.jdt.launching.PROGRAM_ARGUMENTS" value="--project-name MinimalAPI&#13;&#10;--copybook-dir ${project_loc}/sample-copybooks&#13;&#10;--program-id MINIMAL&#13;&#10;--output-dir ${project_loc}/generated-projects&#13;&#10;--force&#13;&#10;--skip-tests"/>
+    <stringAttribute key="org.eclipse.jdt.launching.PROJECT_ATTR" value="springboot-codegen-tool"/>
+    <stringAttribute key="org.eclipse.jdt.launching.SOURCE_PATH_PROVIDER" value="org.eclipse.m2e.launchconfig.sourcepathProvider"/>
+    <stringAttribute key="org.eclipse.jdt.launching.WORKING_DIRECTORY" value="${project_loc}"/>
 </launchConfiguration>

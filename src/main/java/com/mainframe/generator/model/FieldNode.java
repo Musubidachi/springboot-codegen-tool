@@ -1,3 +1,4 @@
+// (Full file contents)
 package com.mainframe.generator.model;
 
 import lombok.Builder;
@@ -68,10 +69,20 @@ public class FieldNode extends CopybookNode {
 
     /**
      * Calculate the byte length for this field.
+     * If PIC is present, use PictureClause; if not but a usage is given (e.g., COMP-1/COMP-2),
+     * return a sensible default size for that usage.
      */
     public int calculateByteLength() {
         if (picture == null) {
-            return 0;
+            // No PIC — infer from usage when possible
+            return switch (usage) {
+                case COMP_1 -> 4;
+                case COMP_2 -> 8;
+                case COMP_5 -> 4;
+                case BINARY -> 4; // best-effort default for COMP / BINARY without PIC
+                case PACKED_DECIMAL -> 0; // can't infer without a PIC
+                default -> 0;
+            };
         }
         return picture.getByteLength(usage);
     }
@@ -84,7 +95,14 @@ public class FieldNode extends CopybookNode {
             return javaType;
         }
         if (picture == null) {
-            return "String";
+            // No PIC -> fallback based on usage
+            return switch (usage) {
+                case COMP_1 -> "Float";
+                case COMP_2 -> "Double";
+                case PACKED_DECIMAL -> "java.math.BigDecimal";
+                case BINARY -> "Integer";
+                default -> "String";
+            };
         }
         if (hasEnum88Values()) {
             return convertToJavaClassName(name) + "Enum";
@@ -110,26 +128,18 @@ public class FieldNode extends CopybookNode {
             if (i == 0) {
                 sb.append(parts[i]);
             } else {
-                sb.append(Character.toUpperCase(parts[i].charAt(0)));
-                if (parts[i].length() > 1) {
-                    sb.append(parts[i].substring(1));
-                }
+                sb.append(parts[i].substring(0, 1).toUpperCase()).append(parts[i].substring(1));
             }
         }
         return sb.toString();
     }
     
     private String convertToJavaClassName(String cobolName) {
-        if (cobolName == null) return "Field";
-        String[] parts = cobolName.split("-");
+        if (cobolName == null) return "Type";
+        String[] parts = cobolName.toLowerCase().split("-");
         StringBuilder sb = new StringBuilder();
-        for (String part : parts) {
-            if (!part.isEmpty()) {
-                sb.append(Character.toUpperCase(part.charAt(0)));
-                if (part.length() > 1) {
-                    sb.append(part.substring(1).toLowerCase());
-                }
-            }
+        for (String p : parts) {
+            sb.append(p.substring(0, 1).toUpperCase()).append(p.substring(1));
         }
         return sb.toString();
     }

@@ -1,11 +1,26 @@
+// (Full file contents)
 package com.mainframe.generator.parser;
 
-import com.mainframe.generator.model.*;
-import com.mainframe.generator.parser.CopybookToken.TokenType;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.*;
+import com.mainframe.generator.model.CopyDirectiveNode;
+import com.mainframe.generator.model.CopybookModel;
+import com.mainframe.generator.model.CopybookNode;
+import com.mainframe.generator.model.Enum88Node;
+import com.mainframe.generator.model.FieldNode;
+import com.mainframe.generator.model.GroupNode;
+import com.mainframe.generator.model.PictureClause;
+import com.mainframe.generator.model.RedefinesNode;
+import com.mainframe.generator.model.UsageType;
+import com.mainframe.generator.parser.CopybookToken.TokenType;
 
 /**
  * Parser for COBOL copybook files.
@@ -167,38 +182,66 @@ public class CopybookParser {
             picture = parsePictureClause();
         }
         
-        // Parse USAGE clause
+        // Parse USAGE clause (or direct COMP-1 / COMP-2 tokens)
         UsageType usage = UsageType.DISPLAY;
+        boolean usagePresent = false;
         if (check(TokenType.USAGE)) {
             advance();
             // Skip optional IS
             if (check(TokenType.IS)) {
                 advance();
             }
+            usagePresent = true;
         }
         if (peek().isUsageType()) {
             usage = parseUsageType();
+            usagePresent = true;
         }
         
-        // Parse OCCURS clause
+        // Parse OCCURS clause (supports both OCCURS <n> [TIMES] and OCCURS <min> TO <max> DEPENDING ON ...)
         int occursCount = 1;
         String occursDepending = null;
         if (check(TokenType.OCCURS)) {
             advance();
-            occursCount = Integer.parseInt(expect(TokenType.NUMERIC_LITERAL).getValue());
             
-            // Optional TIMES
-            if (check(TokenType.TIMES)) {
-                advance();
-            }
-            
-            // Optional DEPENDING ON
-            if (check(TokenType.DEPENDING)) {
-                advance();
-                if (check(TokenType.ON)) {
+            // accept a numeric token (NUMERIC_LITERAL or LEVEL_NUMBER)
+            if (check(TokenType.NUMERIC_LITERAL) || check(TokenType.LEVEL_NUMBER)) {
+                int firstNum = Integer.parseInt(advance().getValue());
+                int minOccurs = firstNum, maxOccurs = firstNum;
+                
+                // Handle optional range: "TO" (tokenized as IDENTIFIER), or THRU/THROUGH tokens
+                if ((check(TokenType.IDENTIFIER) && peek().getValue().equalsIgnoreCase("TO"))
+                        || check(TokenType.THRU) || check(TokenType.THROUGH)) {
+                    advance(); // consume TO/THRU/THROUGH
+                    if (check(TokenType.NUMERIC_LITERAL) || check(TokenType.LEVEL_NUMBER)) {
+                        maxOccurs = Integer.parseInt(advance().getValue());
+                    } else {
+                        throw new ParseException("Expected numeric literal after TO/THRU in OCCURS at line " + peek().getLine());
+                    }
+                }
+                
+                // Optional TIMES (may or may not be present)
+                if (check(TokenType.TIMES)) {
                     advance();
                 }
-                occursDepending = expect(TokenType.IDENTIFIER).getValue();
+                
+                // Optional DEPENDING ON
+                if (check(TokenType.DEPENDING)) {
+                    advance();
+                    if (check(TokenType.ON)) {
+                        advance();
+                    }
+                    occursDepending = expect(TokenType.IDENTIFIER).getValue();
+                }
+                
+                occursCount = Math.max(1, maxOccurs);
+                if (minOccurs != maxOccurs) {
+                    log.debug("Parsed OCCURS range for {}: min={}, max={} at line {}", fieldName, minOccurs, maxOccurs, startLine);
+                } else {
+                    log.debug("Parsed OCCURS count for {}: {} at line {}", fieldName, occursCount, startLine);
+                }
+            } else {
+                throw new ParseException("Expected numeric literal after OCCURS at line " + peek().getLine());
             }
         }
         
@@ -218,13 +261,16 @@ public class CopybookParser {
         // Expect period
         expectPeriod();
         
+        // Decide whether this is elementary (field) or group:
+        boolean isElementary = picture != null || usagePresent;
+        
         // Create appropriate node type
         CopybookNode node;
         
         // Add to parent FIRST (before pushing groups to stack)
         CopybookNode parent = nodeStack.peek();
         
-        if (picture != null) {
+        if (isElementary) {
             // It's a leaf field
             FieldNode field = FieldNode.builder()
                     .level(level)
@@ -250,7 +296,7 @@ public class CopybookParser {
             
             node = field;
             log.debug("Parsed field: {} PIC {} USAGE {} at line {}", 
-                    fieldName, picture.getRawPicture(), usage, startLine);
+                    fieldName, picture != null ? picture.getRawPicture() : "<none>", usage, startLine);
         } else {
             // It's a group
             GroupNode group = GroupNode.builder()
