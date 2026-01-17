@@ -802,24 +802,30 @@ public class ProjectGenerator {
                     }
                     
                     public static byte[] packedDecimal(BigDecimal value, int byteLength) {
-                        // Packed decimal: each byte holds 2 digits, last nibble is sign
+                        // COMP-3 Packed decimal: each byte holds 2 digits, last nibble is sign
+                        // Sign nibbles: 0xC=positive (preferred), 0xD=negative (preferred), 0xF=unsigned
                         byte[] result = new byte[byteLength];
                         java.util.Arrays.fill(result, (byte) 0x00);
-                        
+
                         if (value == null) {
                             result[byteLength - 1] = 0x0C; // Positive zero
                             return result;
                         }
-                        
+
                         boolean negative = value.signum() < 0;
                         String digits = value.abs().movePointRight(value.scale()).toBigInteger().toString();
-                        
+
                         // Pad with leading zeros
                         int totalDigits = (byteLength * 2) - 1;
                         while (digits.length() < totalDigits) {
                             digits = "0" + digits;
                         }
-                        
+
+                        // Truncate if too long
+                        if (digits.length() > totalDigits) {
+                            digits = digits.substring(digits.length() - totalDigits);
+                        }
+
                         // Pack digits
                         int digitIdx = 0;
                         for (int i = 0; i < byteLength - 1; i++) {
@@ -827,39 +833,67 @@ public class ProjectGenerator {
                             int low = digits.charAt(digitIdx++) - '0';
                             result[i] = (byte) ((high << 4) | low);
                         }
-                        
-                        // Last byte: one digit + sign
+
+                        // Last byte: one digit + sign (0xC=positive, 0xD=negative per IBM standard)
                         int lastDigit = digitIdx < digits.length() ? digits.charAt(digitIdx) - '0' : 0;
                         int sign = negative ? 0x0D : 0x0C;
                         result[byteLength - 1] = (byte) ((lastDigit << 4) | sign);
-                        
+
                         return result;
                     }
                     
                     public static BigDecimal unpackDecimal(byte[] bytes, int offset, int length, int scale) {
                         StringBuilder sb = new StringBuilder();
-                        
+
+                        // Unpack all digit nibbles
                         for (int i = 0; i < length - 1; i++) {
                             int b = bytes[offset + i] & 0xFF;
-                            sb.append((char) ('0' + ((b >> 4) & 0x0F)));
-                            sb.append((char) ('0' + (b & 0x0F)));
+                            int highNibble = (b >> 4) & 0x0F;
+                            int lowNibble = b & 0x0F;
+
+                            // Validate digit nibbles (0-9)
+                            if (highNibble > 9 || lowNibble > 9) {
+                                throw new IllegalArgumentException(
+                                    String.format("Invalid packed decimal digit at offset %d: 0x%02X", offset + i, b));
+                            }
+
+                            sb.append((char) ('0' + highNibble));
+                            sb.append((char) ('0' + lowNibble));
                         }
-                        
-                        // Last byte
+
+                        // Last byte: one digit + sign nibble
                         int lastByte = bytes[offset + length - 1] & 0xFF;
-                        sb.append((char) ('0' + ((lastByte >> 4) & 0x0F)));
+                        int lastDigit = (lastByte >> 4) & 0x0F;
                         int sign = lastByte & 0x0F;
-                        
+
+                        // Validate last digit
+                        if (lastDigit > 9) {
+                            throw new IllegalArgumentException(
+                                String.format("Invalid packed decimal digit at offset %d: 0x%02X", offset + length - 1, lastByte));
+                        }
+
+                        sb.append((char) ('0' + lastDigit));
+
+                        // Validate and interpret sign nibble
+                        // Valid signs: 0xC (positive, preferred), 0xD (negative, preferred),
+                        //              0xF (unsigned/positive), 0xA, 0xB, 0xE (alternate)
+                        boolean negative = false;
+                        switch (sign) {
+                            case 0x0C, 0x0F, 0x0A, 0x0E -> negative = false;  // Positive
+                            case 0x0D, 0x0B -> negative = true;                // Negative
+                            default -> throw new IllegalArgumentException(
+                                String.format("Invalid packed decimal sign nibble at offset %d: 0x%X", offset + length - 1, sign));
+                        }
+
                         BigDecimal result = new BigDecimal(sb.toString());
                         if (scale > 0) {
                             result = result.movePointLeft(scale);
                         }
-                        
-                        // Check sign: D = negative
-                        if (sign == 0x0D || sign == 0x0B) {
+
+                        if (negative) {
                             result = result.negate();
                         }
-                        
+
                         return result;
                     }
                     
@@ -1018,15 +1052,45 @@ public class ProjectGenerator {
                 if (field.getOccursCount() > 1) {
                     // Generate loop for OCCURS field
                     String itemVar = "item" + capitalize(fieldName);
-                    sb.append(indent).append("// OCCURS ").append(field.getOccursCount()).append(" - ").append(field.getName()).append("\n");
-                    sb.append(indent).append("List<").append(getJavaType(field)).append("> ").append(fieldName).append("List = ")
-                            .append(getter).append(" != null ? ").append(getter).append(" : new ArrayList<>();\n");
-                    sb.append(indent).append("for (int i = 0; i < ").append(field.getOccursCount()).append("; i++) {\n");
-                    sb.append(indent).append("    ").append(getJavaType(field)).append(" ").append(itemVar)
-                            .append(" = i < ").append(fieldName).append("List.size() ? ").append(fieldName)
-                            .append("List.get(i) : null;\n");
-                    generateFieldSerialize(sb, field, itemVar, indent + "    ");
-                    sb.append(indent).append("}\n\n");
+                    String occursDepending = field.getOccursDepending();
+
+                    if (occursDepending != null && !occursDepending.isBlank()) {
+                        // OCCURS DEPENDING ON - use actual count, pad to max
+                        sb.append(indent).append("// OCCURS ").append(field.getOccursCount())
+                                .append(" DEPENDING ON ").append(occursDepending).append(" - ").append(field.getName()).append("\n");
+                        String dependingFieldName = toCamelCase(occursDepending);
+                        String dependingGetter = objRef + ".get" + capitalize(dependingFieldName) + "()";
+                        sb.append(indent).append("int actualCount_").append(fieldName).append(" = ")
+                                .append(dependingGetter).append(" != null ? ").append(dependingGetter)
+                                .append(".intValue() : 0;\n");
+                        sb.append(indent).append("actualCount_").append(fieldName).append(" = Math.min(actualCount_")
+                                .append(fieldName).append(", ").append(field.getOccursCount()).append(");\n");
+                        sb.append(indent).append("List<").append(getJavaType(field)).append("> ").append(fieldName)
+                                .append("List = ").append(getter).append(" != null ? ").append(getter).append(" : new ArrayList<>();\n");
+                        sb.append(indent).append("for (int i = 0; i < actualCount_").append(fieldName).append("; i++) {\n");
+                        sb.append(indent).append("    ").append(getJavaType(field)).append(" ").append(itemVar)
+                                .append(" = i < ").append(fieldName).append("List.size() ? ").append(fieldName)
+                                .append("List.get(i) : null;\n");
+                        generateFieldSerialize(sb, field, itemVar, indent + "    ");
+                        sb.append(indent).append("}\n");
+                        // Pad remaining entries to max to keep record length fixed
+                        sb.append(indent).append("// Pad remaining ODO entries\n");
+                        sb.append(indent).append("int remainingCount_").append(fieldName).append(" = ")
+                                .append(field.getOccursCount()).append(" - actualCount_").append(fieldName).append(";\n");
+                        sb.append(indent).append("offset += remainingCount_").append(fieldName).append(" * ")
+                                .append(field.getByteLength()).append(";\n\n");
+                    } else {
+                        // Fixed OCCURS
+                        sb.append(indent).append("// OCCURS ").append(field.getOccursCount()).append(" - ").append(field.getName()).append("\n");
+                        sb.append(indent).append("List<").append(getJavaType(field)).append("> ").append(fieldName).append("List = ")
+                                .append(getter).append(" != null ? ").append(getter).append(" : new ArrayList<>();\n");
+                        sb.append(indent).append("for (int i = 0; i < ").append(field.getOccursCount()).append("; i++) {\n");
+                        sb.append(indent).append("    ").append(getJavaType(field)).append(" ").append(itemVar)
+                                .append(" = i < ").append(fieldName).append("List.size() ? ").append(fieldName)
+                                .append("List.get(i) : null;\n");
+                        generateFieldSerialize(sb, field, itemVar, indent + "    ");
+                        sb.append(indent).append("}\n\n");
+                    }
                 } else {
                     generateFieldSerialize(sb, field, getter, indent);
                 }
@@ -1045,16 +1109,45 @@ public class ProjectGenerator {
                     String nestedClassName = toPascalCase(childGroup.getName()) + "Item";
                     String getter = objRef + ".get" + capitalize(groupFieldName) + "()";
                     String itemVar = "item" + capitalize(groupFieldName);
+                    String occursDepending = childGroup.getOccursDepending();
 
-                    sb.append(indent).append("// OCCURS ").append(childGroup.getOccursCount()).append(" - ").append(childGroup.getName()).append("\n");
-                    sb.append(indent).append("List<").append(nestedClassName).append("> ").append(groupFieldName)
-                            .append("List = ").append(getter).append(" != null ? ").append(getter).append(" : new ArrayList<>();\n");
-                    sb.append(indent).append("for (int i = 0; i < ").append(childGroup.getOccursCount()).append("; i++) {\n");
-                    sb.append(indent).append("    ").append(nestedClassName).append(" ").append(itemVar)
-                            .append(" = i < ").append(groupFieldName).append("List.size() ? ")
-                            .append(groupFieldName).append("List.get(i) : null;\n");
-                    generateSerializeFields(sb, childGroup, itemVar, indent + "    ");
-                    sb.append(indent).append("}\n\n");
+                    if (occursDepending != null && !occursDepending.isBlank()) {
+                        // OCCURS DEPENDING ON - use actual count, pad to max
+                        sb.append(indent).append("// OCCURS ").append(childGroup.getOccursCount())
+                                .append(" DEPENDING ON ").append(occursDepending).append(" - ").append(childGroup.getName()).append("\n");
+                        String dependingFieldName = toCamelCase(occursDepending);
+                        String dependingGetter = objRef + ".get" + capitalize(dependingFieldName) + "()";
+                        sb.append(indent).append("int actualCount_").append(groupFieldName).append(" = ")
+                                .append(dependingGetter).append(" != null ? ").append(dependingGetter)
+                                .append(".intValue() : 0;\n");
+                        sb.append(indent).append("actualCount_").append(groupFieldName).append(" = Math.min(actualCount_")
+                                .append(groupFieldName).append(", ").append(childGroup.getOccursCount()).append(");\n");
+                        sb.append(indent).append("List<").append(nestedClassName).append("> ").append(groupFieldName)
+                                .append("List = ").append(getter).append(" != null ? ").append(getter).append(" : new ArrayList<>();\n");
+                        sb.append(indent).append("for (int i = 0; i < actualCount_").append(groupFieldName).append("; i++) {\n");
+                        sb.append(indent).append("    ").append(nestedClassName).append(" ").append(itemVar)
+                                .append(" = i < ").append(groupFieldName).append("List.size() ? ")
+                                .append(groupFieldName).append("List.get(i) : null;\n");
+                        generateSerializeFields(sb, childGroup, itemVar, indent + "    ");
+                        sb.append(indent).append("}\n");
+                        // Pad remaining entries to max to keep record length fixed
+                        sb.append(indent).append("// Pad remaining ODO entries\n");
+                        sb.append(indent).append("int remainingCount_").append(groupFieldName).append(" = ")
+                                .append(childGroup.getOccursCount()).append(" - actualCount_").append(groupFieldName).append(";\n");
+                        sb.append(indent).append("offset += remainingCount_").append(groupFieldName).append(" * ")
+                                .append(childGroup.getByteLength()).append(";\n\n");
+                    } else {
+                        // Fixed OCCURS
+                        sb.append(indent).append("// OCCURS ").append(childGroup.getOccursCount()).append(" - ").append(childGroup.getName()).append("\n");
+                        sb.append(indent).append("List<").append(nestedClassName).append("> ").append(groupFieldName)
+                                .append("List = ").append(getter).append(" != null ? ").append(getter).append(" : new ArrayList<>();\n");
+                        sb.append(indent).append("for (int i = 0; i < ").append(childGroup.getOccursCount()).append("; i++) {\n");
+                        sb.append(indent).append("    ").append(nestedClassName).append(" ").append(itemVar)
+                                .append(" = i < ").append(groupFieldName).append("List.size() ? ")
+                                .append(groupFieldName).append("List.get(i) : null;\n");
+                        generateSerializeFields(sb, childGroup, itemVar, indent + "    ");
+                        sb.append(indent).append("}\n\n");
+                    }
                 } else {
                     // Regular group - inline
                     generateSerializeFields(sb, childGroup, objRef, indent);
@@ -1129,16 +1222,41 @@ public class ProjectGenerator {
                 if (field.getOccursCount() > 1) {
                     // Generate loop for OCCURS field
                     String listVar = fieldName + "List";
-                    sb.append(indent).append("// OCCURS ").append(field.getOccursCount()).append(" - ").append(field.getName()).append("\n");
-                    sb.append(indent).append("List<").append(getJavaType(field)).append("> ").append(listVar)
-                            .append(" = new ArrayList<>();\n");
-                    sb.append(indent).append("for (int i = 0; i < ").append(field.getOccursCount()).append("; i++) {\n");
+                    String occursDepending = field.getOccursDepending();
 
-                    // Generate deserialization inside loop
-                    generateFieldDeserializeToVariable(sb, field, listVar, indent + "    ");
-
-                    sb.append(indent).append("}\n");
-                    sb.append(indent).append(builderRef).append(".").append(fieldName).append("(").append(listVar).append(");\n\n");
+                    if (occursDepending != null && !occursDepending.isBlank()) {
+                        // OCCURS DEPENDING ON - deserialize actual count, skip remaining
+                        sb.append(indent).append("// OCCURS ").append(field.getOccursCount())
+                                .append(" DEPENDING ON ").append(occursDepending).append(" - ").append(field.getName()).append("\n");
+                        String dependingFieldName = toCamelCase(occursDepending);
+                        String dependingGetter = builderRef + ".build().get" + capitalize(dependingFieldName) + "()";
+                        sb.append(indent).append("int actualCount_").append(fieldName).append(" = ")
+                                .append(dependingGetter).append(" != null ? ").append(dependingGetter)
+                                .append(".intValue() : 0;\n");
+                        sb.append(indent).append("actualCount_").append(fieldName).append(" = Math.min(actualCount_")
+                                .append(fieldName).append(", ").append(field.getOccursCount()).append(");\n");
+                        sb.append(indent).append("List<").append(getJavaType(field)).append("> ").append(listVar)
+                                .append(" = new ArrayList<>();\n");
+                        sb.append(indent).append("for (int i = 0; i < actualCount_").append(fieldName).append("; i++) {\n");
+                        generateFieldDeserializeToVariable(sb, field, listVar, indent + "    ");
+                        sb.append(indent).append("}\n");
+                        // Skip remaining entries to maintain fixed record length
+                        sb.append(indent).append("// Skip remaining ODO entries\n");
+                        sb.append(indent).append("int remainingCount_").append(fieldName).append(" = ")
+                                .append(field.getOccursCount()).append(" - actualCount_").append(fieldName).append(";\n");
+                        sb.append(indent).append("offset += remainingCount_").append(fieldName).append(" * ")
+                                .append(field.getByteLength()).append(";\n");
+                        sb.append(indent).append(builderRef).append(".").append(fieldName).append("(").append(listVar).append(");\n\n");
+                    } else {
+                        // Fixed OCCURS
+                        sb.append(indent).append("// OCCURS ").append(field.getOccursCount()).append(" - ").append(field.getName()).append("\n");
+                        sb.append(indent).append("List<").append(getJavaType(field)).append("> ").append(listVar)
+                                .append(" = new ArrayList<>();\n");
+                        sb.append(indent).append("for (int i = 0; i < ").append(field.getOccursCount()).append("; i++) {\n");
+                        generateFieldDeserializeToVariable(sb, field, listVar, indent + "    ");
+                        sb.append(indent).append("}\n");
+                        sb.append(indent).append(builderRef).append(".").append(fieldName).append("(").append(listVar).append(");\n\n");
+                    }
                 } else {
                     generateFieldDeserialize(sb, field, builderRef, indent);
                 }
@@ -1155,19 +1273,47 @@ public class ProjectGenerator {
                     String groupFieldName = toCamelCase(childGroup.getName());
                     String nestedClassName = toPascalCase(childGroup.getName()) + "Item";
                     String listVar = groupFieldName + "List";
+                    String occursDepending = childGroup.getOccursDepending();
 
-                    sb.append(indent).append("// OCCURS ").append(childGroup.getOccursCount()).append(" - ").append(childGroup.getName()).append("\n");
-                    sb.append(indent).append("List<").append(nestedClassName).append("> ").append(listVar)
-                            .append(" = new ArrayList<>();\n");
-                    sb.append(indent).append("for (int i = 0; i < ").append(childGroup.getOccursCount()).append("; i++) {\n");
-                    sb.append(indent).append("    ").append(nestedClassName).append(".").append(nestedClassName)
-                            .append("Builder itemBuilder = ").append(nestedClassName).append(".builder();\n");
-
-                    generateDeserializeFields(sb, childGroup, "itemBuilder", indent + "    ");
-
-                    sb.append(indent).append("    ").append(listVar).append(".add(itemBuilder.build());\n");
-                    sb.append(indent).append("}\n");
-                    sb.append(indent).append(builderRef).append(".").append(groupFieldName).append("(").append(listVar).append(");\n\n");
+                    if (occursDepending != null && !occursDepending.isBlank()) {
+                        // OCCURS DEPENDING ON - deserialize actual count, skip remaining
+                        sb.append(indent).append("// OCCURS ").append(childGroup.getOccursCount())
+                                .append(" DEPENDING ON ").append(occursDepending).append(" - ").append(childGroup.getName()).append("\n");
+                        String dependingFieldName = toCamelCase(occursDepending);
+                        String dependingGetter = builderRef + ".build().get" + capitalize(dependingFieldName) + "()";
+                        sb.append(indent).append("int actualCount_").append(groupFieldName).append(" = ")
+                                .append(dependingGetter).append(" != null ? ").append(dependingGetter)
+                                .append(".intValue() : 0;\n");
+                        sb.append(indent).append("actualCount_").append(groupFieldName).append(" = Math.min(actualCount_")
+                                .append(groupFieldName).append(", ").append(childGroup.getOccursCount()).append(");\n");
+                        sb.append(indent).append("List<").append(nestedClassName).append("> ").append(listVar)
+                                .append(" = new ArrayList<>();\n");
+                        sb.append(indent).append("for (int i = 0; i < actualCount_").append(groupFieldName).append("; i++) {\n");
+                        sb.append(indent).append("    ").append(nestedClassName).append(".").append(nestedClassName)
+                                .append("Builder itemBuilder = ").append(nestedClassName).append(".builder();\n");
+                        generateDeserializeFields(sb, childGroup, "itemBuilder", indent + "    ");
+                        sb.append(indent).append("    ").append(listVar).append(".add(itemBuilder.build());\n");
+                        sb.append(indent).append("}\n");
+                        // Skip remaining entries to maintain fixed record length
+                        sb.append(indent).append("// Skip remaining ODO entries\n");
+                        sb.append(indent).append("int remainingCount_").append(groupFieldName).append(" = ")
+                                .append(childGroup.getOccursCount()).append(" - actualCount_").append(groupFieldName).append(";\n");
+                        sb.append(indent).append("offset += remainingCount_").append(groupFieldName).append(" * ")
+                                .append(childGroup.getByteLength()).append(";\n");
+                        sb.append(indent).append(builderRef).append(".").append(groupFieldName).append("(").append(listVar).append(");\n\n");
+                    } else {
+                        // Fixed OCCURS
+                        sb.append(indent).append("// OCCURS ").append(childGroup.getOccursCount()).append(" - ").append(childGroup.getName()).append("\n");
+                        sb.append(indent).append("List<").append(nestedClassName).append("> ").append(listVar)
+                                .append(" = new ArrayList<>();\n");
+                        sb.append(indent).append("for (int i = 0; i < ").append(childGroup.getOccursCount()).append("; i++) {\n");
+                        sb.append(indent).append("    ").append(nestedClassName).append(".").append(nestedClassName)
+                                .append("Builder itemBuilder = ").append(nestedClassName).append(".builder();\n");
+                        generateDeserializeFields(sb, childGroup, "itemBuilder", indent + "    ");
+                        sb.append(indent).append("    ").append(listVar).append(".add(itemBuilder.build());\n");
+                        sb.append(indent).append("}\n");
+                        sb.append(indent).append(builderRef).append(".").append(groupFieldName).append("(").append(listVar).append(");\n\n");
+                    }
                 } else {
                     // Regular group - inline
                     generateDeserializeFields(sb, childGroup, builderRef, indent);

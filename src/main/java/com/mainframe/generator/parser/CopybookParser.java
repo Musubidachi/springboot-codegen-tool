@@ -448,31 +448,55 @@ public class CopybookParser {
     
     private int calculateOffsets(CopybookNode node, int currentOffset) {
         node.setStartOffset(currentOffset);
-        
+
         if (node instanceof FieldNode field) {
             int length = field.getByteLength() * field.getOccursCount();
+            node.setByteLength(field.getByteLength());
             return currentOffset + length;
         } else if (node instanceof GroupNode group) {
             int groupStart = currentOffset;
+            int maxRedefineLength = 0;
+            int currentGroupOffset = groupStart;
+
             for (CopybookNode child : group.getChildren()) {
-                if (child instanceof RedefinesNode || 
+                boolean isRedefine = child instanceof RedefinesNode ||
                     (child instanceof GroupNode g && g.isRedefines()) ||
-                    (child instanceof FieldNode f && f.isRedefines())) {
-                    // REDEFINES doesn't add to offset
-                    child.setStartOffset(groupStart);
+                    (child instanceof FieldNode f && f.isRedefines());
+
+                if (isRedefine) {
+                    // REDEFINES shares the same offset as the target (or previous sibling)
+                    // Recursively calculate offsets for children of redefines
+                    int redefineEnd = calculateOffsets(child, groupStart);
+                    int redefineLength = redefineEnd - groupStart;
+                    // Track max length among redefine siblings
+                    maxRedefineLength = Math.max(maxRedefineLength, redefineLength);
                 } else {
-                    currentOffset = calculateOffsets(child, currentOffset);
+                    // Check if this is the first non-redefine after redefines
+                    if (maxRedefineLength > 0) {
+                        // Use max of redefine siblings
+                        currentGroupOffset = groupStart + maxRedefineLength;
+                        maxRedefineLength = 0; // Reset for next group of redefines
+                    }
+                    currentGroupOffset = calculateOffsets(child, currentGroupOffset);
                 }
             }
-            group.setByteLength(currentOffset - groupStart);
-            
+
+            // Handle any trailing redefines
+            if (maxRedefineLength > 0) {
+                currentGroupOffset = groupStart + maxRedefineLength;
+            }
+
+            int singleLength = currentGroupOffset - groupStart;
+            group.setByteLength(singleLength);
+
             // Handle OCCURS
             if (group.getOccursCount() > 1) {
-                int singleLength = currentOffset - groupStart;
                 currentOffset = groupStart + (singleLength * group.getOccursCount());
+            } else {
+                currentOffset = currentGroupOffset;
             }
         }
-        
+
         return currentOffset;
     }
     

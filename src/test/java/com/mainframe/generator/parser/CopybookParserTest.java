@@ -233,6 +233,134 @@ class CopybookParserTest {
         assertThat(field2.getValue()).isEqualTo("0");
     }
 
+    @Test
+    void testRedefinesOffsetCalculation() {
+        String copybook = """
+               01  TEST-RECORD.
+                   05  DATE-FIELD          PIC 9(8).
+                   05  DATE-PARTS REDEFINES DATE-FIELD.
+                       10  DATE-YEAR       PIC 9(4).
+                       10  DATE-MONTH      PIC 9(2).
+                       10  DATE-DAY        PIC 9(2).
+                   05  NEXT-FIELD          PIC X(10).
+            """;
+
+        CopybookModel model = parse(copybook);
+
+        FieldNode dateField = model.findField("DATE-FIELD").orElse(null);
+        GroupNode dateParts = model.findGroup("DATE-PARTS").orElse(null);
+        FieldNode nextField = model.findField("NEXT-FIELD").orElse(null);
+
+        assertThat(dateField).isNotNull();
+        assertThat(dateParts).isNotNull();
+        assertThat(nextField).isNotNull();
+
+        // REDEFINES should share the same offset as its target
+        assertThat(dateField.getStartOffset()).isEqualTo(0);
+        assertThat(dateParts.getStartOffset()).isEqualTo(0);
+
+        // Next field should start after DATE-FIELD (8 bytes)
+        assertThat(nextField.getStartOffset()).isEqualTo(8);
+
+        // Total record length should be 8 + 10 = 18 (REDEFINES uses max, not sum)
+        assertThat(model.calculateTotalByteLength()).isEqualTo(18);
+    }
+
+    @Test
+    void testRedefinesWithDifferentSizes() {
+        String copybook = """
+               01  TEST-RECORD.
+                   05  SMALL-FIELD         PIC X(5).
+                   05  LARGE-REDEF REDEFINES SMALL-FIELD PIC X(20).
+                   05  NEXT-FIELD          PIC X(10).
+            """;
+
+        CopybookModel model = parse(copybook);
+
+        FieldNode smallField = model.findField("SMALL-FIELD").orElse(null);
+        FieldNode largeRedef = model.findField("LARGE-REDEF").orElse(null);
+        FieldNode nextField = model.findField("NEXT-FIELD").orElse(null);
+
+        assertThat(smallField).isNotNull();
+        assertThat(largeRedef).isNotNull();
+        assertThat(nextField).isNotNull();
+
+        // Both should start at offset 0
+        assertThat(smallField.getStartOffset()).isEqualTo(0);
+        assertThat(largeRedef.getStartOffset()).isEqualTo(0);
+
+        // Next field should start after the larger REDEFINES (20 bytes)
+        assertThat(nextField.getStartOffset()).isEqualTo(20);
+
+        // Total should use max of redefines: 20 + 10 = 30
+        assertThat(model.calculateTotalByteLength()).isEqualTo(30);
+    }
+
+    @Test
+    void testOccursDependingOn() {
+        String copybook = """
+               01  TEST-RECORD.
+                   05  ITEM-COUNT          PIC 9(3) COMP.
+                   05  ITEMS OCCURS 1 TO 100 TIMES DEPENDING ON ITEM-COUNT.
+                       10  ITEM-CODE       PIC X(5).
+                       10  ITEM-QTY        PIC 9(3).
+            """;
+
+        CopybookModel model = parse(copybook);
+
+        FieldNode itemCount = model.findField("ITEM-COUNT").orElse(null);
+        GroupNode items = model.findGroup("ITEMS").orElse(null);
+
+        assertThat(itemCount).isNotNull();
+        assertThat(items).isNotNull();
+
+        // OCCURS DEPENDING ON should be captured
+        assertThat(items.getOccursDepending()).isEqualTo("ITEM-COUNT");
+        assertThat(items.getOccursCount()).isEqualTo(100); // Max count
+
+        // Verify offset calculation
+        assertThat(itemCount.getStartOffset()).isEqualTo(0);
+        assertThat(items.getStartOffset()).isEqualTo(2); // After COMP 9(3) = 2 bytes
+    }
+
+    @Test
+    void testMultipleRedefinesSiblings() {
+        String copybook = """
+               01  TEST-RECORD.
+                   05  BASE-FIELD          PIC X(10).
+                   05  REDEF-1 REDEFINES BASE-FIELD PIC X(5).
+                   05  REDEF-2 REDEFINES BASE-FIELD PIC X(15).
+                   05  REDEF-3 REDEFINES BASE-FIELD PIC X(8).
+                   05  NEXT-FIELD          PIC X(5).
+            """;
+
+        CopybookModel model = parse(copybook);
+
+        FieldNode baseField = model.findField("BASE-FIELD").orElse(null);
+        FieldNode redef1 = model.findField("REDEF-1").orElse(null);
+        FieldNode redef2 = model.findField("REDEF-2").orElse(null);
+        FieldNode redef3 = model.findField("REDEF-3").orElse(null);
+        FieldNode nextField = model.findField("NEXT-FIELD").orElse(null);
+
+        assertThat(baseField).isNotNull();
+        assertThat(redef1).isNotNull();
+        assertThat(redef2).isNotNull();
+        assertThat(redef3).isNotNull();
+        assertThat(nextField).isNotNull();
+
+        // All redefines should share offset 0
+        assertThat(baseField.getStartOffset()).isEqualTo(0);
+        assertThat(redef1.getStartOffset()).isEqualTo(0);
+        assertThat(redef2.getStartOffset()).isEqualTo(0);
+        assertThat(redef3.getStartOffset()).isEqualTo(0);
+
+        // Next field should start after the largest redefine (15 bytes)
+        assertThat(nextField.getStartOffset()).isEqualTo(15);
+
+        // Total should use max of all redefines: 15 + 5 = 20
+        assertThat(model.calculateTotalByteLength()).isEqualTo(20);
+    }
+
     private CopybookModel parse(String source) {
         CopybookTokenizer tokenizer = new CopybookTokenizer(source, "test.cpy");
         List<CopybookToken> tokens = tokenizer.tokenize();
