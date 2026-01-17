@@ -795,7 +795,7 @@ public class ProjectGenerator {
 
     private boolean hasRedefines(CopybookModel model) {
         for (FieldNode field : model.getAllFields()) {
-            if (field.getRedefines() != null && !field.getRedefines().isBlank()) {
+            if (field.getRedefinesTarget() != null && !field.getRedefinesTarget().isBlank()) {
                 return true;
             }
         }

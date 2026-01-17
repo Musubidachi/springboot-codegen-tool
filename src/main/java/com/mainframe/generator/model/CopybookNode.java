@@ -1,12 +1,10 @@
 package com.mainframe.generator.model;
 
 import lombok.AllArgsConstructor;
-import lombok.Builder;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
-
-import java.util.ArrayList;
-import java.util.List;
+import lombok.ToString;
 
 /**
  * Base class for all copybook AST nodes.
@@ -18,6 +16,8 @@ public abstract class CopybookNode {
     protected int level;
     protected String name;
     protected String originalName;
+    @EqualsAndHashCode.Exclude
+    @ToString.Exclude
     protected CopybookNode parent;
     protected int startOffset;
     protected int byteLength;

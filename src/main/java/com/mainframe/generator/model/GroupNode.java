@@ -1,13 +1,15 @@
 // (Full file contents)
 package com.mainframe.generator.model;
 
+
+import java.util.ArrayList;
+import java.util.List;
+
 import lombok.Builder;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
-
-import java.util.ArrayList;
-import java.util.List;
+import lombok.ToString;
 
 /**
  * Represents a group (non-leaf) node in the copybook structure.
@@ -17,6 +19,9 @@ import java.util.List;
 @EqualsAndHashCode(callSuper = true)
 @NoArgsConstructor
 public class GroupNode extends CopybookNode {
+	
+    @EqualsAndHashCode.Exclude
+    @ToString.Exclude
     private List<CopybookNode> children = new ArrayList<>();
     private int occursCount = 1;
     private String occursDepending;
