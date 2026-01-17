@@ -118,7 +118,7 @@ public class PictureClause {
         }
 
         if (decimalDigits > 0 || hasImpliedDecimal) {
-            return "BigDecimal";
+            return "java.math.BigDecimal";
         }
 
         // For integers, choose type based on size
@@ -135,7 +135,7 @@ public class PictureClause {
         // Display or packed decimal integers
         if (totalDigits <= 9) return "Integer";
         if (totalDigits <= 18) return "Long";
-        return "BigDecimal";
+        return "java.math.BigDecimal";
     }
 
     /**

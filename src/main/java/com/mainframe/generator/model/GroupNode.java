@@ -54,8 +54,20 @@ public class GroupNode extends CopybookNode {
     }
     
     public int calculateByteLength() {
+        // First pass: identify which fields are redefine targets
+        java.util.Set<String> redefineTargets = new java.util.HashSet<>();
+        for (CopybookNode child : children) {
+            if (child instanceof GroupNode group && group.isRedefines()) {
+                redefineTargets.add(group.getRedefinesTarget());
+            } else if (child instanceof FieldNode field && field.isRedefines()) {
+                redefineTargets.add(field.getRedefinesTarget());
+            }
+        }
+
+        // Second pass: calculate total length
         int total = 0;
         int maxRedefineLength = 0;
+        String currentRedefineTarget = null;
 
         for (CopybookNode child : children) {
             boolean isRedefine = (child instanceof GroupNode group && group.isRedefines()) ||
@@ -69,15 +81,42 @@ public class GroupNode extends CopybookNode {
             }
 
             if (isRedefine) {
-                // Track max length among redefine siblings
-                maxRedefineLength = Math.max(maxRedefineLength, childLength);
-            } else {
-                // Add previous redefine max if any
-                if (maxRedefineLength > 0) {
+                String target = null;
+                if (child instanceof GroupNode group) {
+                    target = group.getRedefinesTarget();
+                } else if (child instanceof FieldNode field) {
+                    target = field.getRedefinesTarget();
+                }
+
+                if (currentRedefineTarget != null && !currentRedefineTarget.equals(target)) {
+                    // Switching to a different redefine set, finalize the previous one
                     total += maxRedefineLength;
                     maxRedefineLength = 0;
                 }
-                total += childLength;
+
+                currentRedefineTarget = target;
+                maxRedefineLength = Math.max(maxRedefineLength, childLength);
+            } else {
+                // Non-redefine field
+                boolean isTarget = redefineTargets.contains(child.getName());
+
+                if (isTarget) {
+                    // This field is a redefine target, so it starts a redefine set
+                    if (currentRedefineTarget != null && maxRedefineLength > 0) {
+                        // Finalize previous redefine set
+                        total += maxRedefineLength;
+                    }
+                    currentRedefineTarget = child.getName();
+                    maxRedefineLength = childLength;
+                } else {
+                    // Normal field not involved in any redefines
+                    if (maxRedefineLength > 0) {
+                        total += maxRedefineLength;
+                        maxRedefineLength = 0;
+                        currentRedefineTarget = null;
+                    }
+                    total += childLength;
+                }
             }
         }
 
