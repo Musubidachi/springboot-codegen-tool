@@ -118,7 +118,7 @@ public class PictureClause {
         }
 
         if (decimalDigits > 0 || hasImpliedDecimal) {
-            return "java.math.BigDecimal";
+            return "BigDecimal";
         }
 
         // For integers, choose type based on size
@@ -135,7 +135,7 @@ public class PictureClause {
         // Display or packed decimal integers
         if (totalDigits <= 9) return "Integer";
         if (totalDigits <= 18) return "Long";
-        return "java.math.BigDecimal";
+        return "BigDecimal";
     }
 
     /**
@@ -155,7 +155,7 @@ public class PictureClause {
         };
     }
 
-    private int getBinaryByteLength() {
+    public int getBinaryByteLength() {
         int digits = integerDigits + decimalDigits;
         if (digits <= 4) return 2;
         if (digits <= 9) return 4;
