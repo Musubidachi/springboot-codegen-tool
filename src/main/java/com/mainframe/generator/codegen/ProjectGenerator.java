@@ -935,7 +935,22 @@ public class ProjectGenerator {
         sb.append("package ").append(config.getBasePackage()).append(".util;\n\n");
         sb.append("import ").append(config.getBasePackage()).append(".model.")
                 .append(suffix.toLowerCase()).append(".").append(dtoClassName).append(";\n");
-        sb.append("import org.springframework.stereotype.Component;\n\n");
+
+        // Collect and import enum types
+        Set<String> enumImports = new HashSet<>();
+        for (FieldNode field : copybook.getAllFields()) {
+            if (field.hasEnum88Values() && !field.isFiller() && !mappingDoc.shouldIgnore(field.getName())) {
+                enumImports.add(config.getBasePackage() + ".model." + toPascalCase(field.getName()) + "Enum");
+            }
+        }
+        for (String enumImport : enumImports) {
+            sb.append("import ").append(enumImport).append(";\n");
+        }
+
+        sb.append("import org.springframework.stereotype.Component;\n");
+        sb.append("import java.math.BigDecimal;\n");
+        sb.append("import java.util.List;\n");
+        sb.append("import java.util.ArrayList;\n\n");
         
         sb.append("/**\n");
         sb.append(" * Serializer for ").append(dtoClassName).append("\n");
@@ -998,11 +1013,11 @@ public class ProjectGenerator {
                 }
 
                 String fieldName = getJavaFieldName(field);
-                String getter = objRef + ".get" + toPascalCase(fieldName) + "()";
+                String getter = objRef + ".get" + capitalize(fieldName) + "()";
 
                 if (field.getOccursCount() > 1) {
                     // Generate loop for OCCURS field
-                    String itemVar = "item" + toPascalCase(fieldName);
+                    String itemVar = "item" + capitalize(fieldName);
                     sb.append(indent).append("// OCCURS ").append(field.getOccursCount()).append(" - ").append(field.getName()).append("\n");
                     sb.append(indent).append("List<").append(getJavaType(field)).append("> ").append(fieldName).append("List = ")
                             .append(getter).append(" != null ? ").append(getter).append(" : new ArrayList<>();\n");
@@ -1028,8 +1043,8 @@ public class ProjectGenerator {
                     // OCCURS group - generate loop
                     String groupFieldName = toCamelCase(childGroup.getName());
                     String nestedClassName = toPascalCase(childGroup.getName()) + "Item";
-                    String getter = objRef + ".get" + toPascalCase(groupFieldName) + "()";
-                    String itemVar = "item" + toPascalCase(groupFieldName);
+                    String getter = objRef + ".get" + capitalize(groupFieldName) + "()";
+                    String itemVar = "item" + capitalize(groupFieldName);
 
                     sb.append(indent).append("// OCCURS ").append(childGroup.getOccursCount()).append(" - ").append(childGroup.getName()).append("\n");
                     sb.append(indent).append("List<").append(nestedClassName).append("> ").append(groupFieldName)
@@ -1070,9 +1085,19 @@ public class ProjectGenerator {
                     .append(valueExpr).append(", ").append(byteLen).append("), 0, result, offset, ")
                     .append(byteLen).append(");\n");
         } else if (usage == UsageType.BINARY || usage == UsageType.COMP_5) {
-            // Binary
+            // Binary - handle different numeric types
+            String valueToSerialize = valueExpr + " != null ? " + valueExpr;
+            String javaType = field.inferJavaType();
+            if (javaType.equals("Short") || javaType.equals("Integer")) {
+                valueToSerialize += ".intValue()";
+            } else if (javaType.equals("Long")) {
+                valueToSerialize += ".intValue()"; // Convert to int for serialization
+            } else {
+                valueToSerialize += ".intValue()"; // Default fallback
+            }
+            valueToSerialize += " : 0";
             sb.append(indent).append("System.arraycopy(EbcdicUtils.intToBinary(")
-                    .append(valueExpr).append(" != null ? ").append(valueExpr).append(".intValue() : 0, ")
+                    .append(valueToSerialize).append(", ")
                     .append(byteLen).append("), 0, result, offset, ").append(byteLen).append(");\n");
         } else {
             // Zoned decimal
@@ -1193,16 +1218,20 @@ public class ProjectGenerator {
         } else if (usage == UsageType.PACKED_DECIMAL) {
             return "EbcdicUtils.unpackDecimal(bytes, offset, " + byteLen + ", " + pic.getDecimalDigits() + ")";
         } else if (usage == UsageType.BINARY || usage == UsageType.COMP_5) {
-            if (javaType.equals("Integer")) {
+            if (javaType.equals("Short")) {
+                return "(short) EbcdicUtils.binaryToInt(bytes, offset, " + byteLen + ")";
+            } else if (javaType.equals("Integer")) {
                 return "EbcdicUtils.binaryToInt(bytes, offset, " + byteLen + ")";
-            } else {
+            } else if (javaType.equals("Long")) {
                 return "(long) EbcdicUtils.binaryToInt(bytes, offset, " + byteLen + ")";
+            } else {
+                return "EbcdicUtils.binaryToInt(bytes, offset, " + byteLen + ")";
             }
         } else {
             // Zoned decimal or display numeric
             if (javaType.contains("BigDecimal")) {
-                return "new java.math.BigDecimal(EbcdicUtils.unzonedDecimal(bytes, offset, " + byteLen + "))";
-            } else if (javaType.equals("Integer") || javaType.equals("Long")) {
+                return "new BigDecimal(EbcdicUtils.unzonedDecimal(bytes, offset, " + byteLen + "))";
+            } else if (javaType.equals("Integer") || javaType.equals("Long") || javaType.equals("Short")) {
                 return javaType + ".valueOf(EbcdicUtils.unzonedDecimal(bytes, offset, " + byteLen + "))";
             } else {
                 return "EbcdicUtils.ebcdicToString(bytes, offset, " + byteLen + ")";
@@ -2176,5 +2205,12 @@ public class ProjectGenerator {
             return pascal;
         }
         return Character.toLowerCase(pascal.charAt(0)) + pascal.substring(1);
+    }
+
+    private String capitalize(String input) {
+        if (input == null || input.isEmpty()) {
+            return input;
+        }
+        return Character.toUpperCase(input.charAt(0)) + input.substring(1);
     }
 }
