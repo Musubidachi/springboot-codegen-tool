@@ -1,5 +1,14 @@
 package com.mainframe.generator.codegen;
 
+import com.mainframe.generator.codegen.dto.EnumGenerator;
+import com.mainframe.generator.codegen.dto.metadata.DtoDeduplicator;
+import com.mainframe.generator.codegen.dto.metadata.DtoInheritanceDetector;
+import com.mainframe.generator.codegen.dto.metadata.DtoMetadataBuilder;
+import com.mainframe.generator.codegen.dto.metadata.DtoPackageClassifier;
+import com.mainframe.generator.codegen.dto.wrapper.WrapperDecisionMaker;
+import com.mainframe.generator.codegen.dto.wrapper.WrapperGenerator;
+import com.mainframe.generator.codegen.util.FileWriteUtil;
+import com.mainframe.generator.codegen.util.NamingUtil;
 import com.mainframe.generator.mapping.MappingDocument;
 import com.mainframe.generator.mapping.MappingParser;
 import com.mainframe.generator.model.*;
@@ -114,17 +123,17 @@ public class ProjectGenerator {
             log.info("Step 5: Generating application.yml...");
             generateApplicationYml(projectDir);
             
-            // Step 6: Generate model classes
-            log.info("Step 6: Generating model classes...");
+            // Step 6: Generate enums FIRST (DTOs reference them)
+            log.info("Step 6: Generating enum classes...");
+            generateEnumClasses(projectDir);
+
+            // Step 7: Generate model classes
+            log.info("Step 7: Generating model classes...");
             int dtoCount = generateModelClasses(projectDir);
 
-            // Step 6.5: Generate wrapper classes (ApiRequest/ApiResponse)
-            log.info("Step 6.5: Generating wrapper classes...");
+            // Step 8: Generate wrapper classes (ApiRequest/ApiResponse)
+            log.info("Step 8: Generating wrapper classes...");
             generateWrapperClasses(projectDir);
-
-            // Step 7: Generate enums
-            log.info("Step 7: Generating enum classes...");
-            generateEnumClasses(projectDir);
             
             // Step 8: Generate serialization classes
             log.info("Step 8: Generating serialization classes...");
@@ -370,65 +379,88 @@ public class ProjectGenerator {
 
     /**
      * Build DTO metadata with structural deduplication and inheritance analysis.
-     * This must be called after identifyRequestResponse().
+     * FIX: Now uses extracted classes and properly classifies dependencies in heuristic mode.
      */
     private void buildDtoMetadata() {
         log.info("Building DTO metadata with deduplication and inheritance analysis...");
 
-        boolean usingFolderBasedSelection = config.getRequestCopybookDir() != null || config.getResponseCopybookDir() != null;
+        boolean usingFolderBasedSelection = config.getRequestCopybookDir() != null ||
+                                             config.getResponseCopybookDir() != null;
 
         if (!usingFolderBasedSelection && !config.isTestMode()) {
-            // Heuristic mode: simple metadata for request/response roots only
-            if (requestCopybook != null) {
-                String className = toPascalCase(config.getProgramId()) + "Request";
-                dtoMetadataMap.put(requestCopybook, DtoMetadata.builder()
-                        .copybookModel(requestCopybook)
-                        .className(className)
-                        .originalClassName(className)
-                        .packageType("request")
-                        .isWrapper(false)
-                        .isDeduped(false)
-                        .byteLength(requestCopybook.calculateTotalByteLength())
-                        .build());
-            }
-            if (responseCopybook != null) {
-                String className = toPascalCase(config.getProgramId()) + "Response";
-                dtoMetadataMap.put(responseCopybook, DtoMetadata.builder()
-                        .copybookModel(responseCopybook)
-                        .className(className)
-                        .originalClassName(className)
-                        .packageType("response")
-                        .isWrapper(false)
-                        .isDeduped(false)
-                        .byteLength(responseCopybook.calculateTotalByteLength())
-                        .build());
-            }
+            // FIX: Heuristic mode now properly classifies dependencies
+            buildMetadataForHeuristicMode();
             return;
         }
 
         // Folder-based or test mode: full metadata analysis
+        buildMetadataForFolderMode();
+
+        // Step 2: Detect structural duplicates and mark for deduplication
+        DtoDeduplicator deduplicator = new DtoDeduplicator(dtoMetadataMap, signatureToModels,
+                sharedModels, requestModels, responseModels);
+        int dedupedCount = deduplicator.deduplicate();
+
+        if (dedupedCount > 0) {
+            log.info("  Deduped {} DTOs through structural analysis", dedupedCount);
+        }
+
+        // Step 3: Detect inheritance relationships if enabled
+        if (config.isInferInheritance()) {
+            DtoInheritanceDetector inheritanceDetector = new DtoInheritanceDetector(
+                    dtoMetadataMap, inheritanceMap);
+            int inheritanceCount = inheritanceDetector.detect();
+            if (inheritanceCount > 0) {
+                log.info("  Detected {} inheritance relationships", inheritanceCount);
+            }
+        }
+
+        log.info("DTO metadata built successfully: {} unique DTOs, {} deduped",
+                dtoMetadataMap.size() - dedupedCount, dedupedCount);
+    }
+
+    /**
+     * FIX: New method that properly classifies dependencies in heuristic mode.
+     */
+    private void buildMetadataForHeuristicMode() {
+        log.info("Building metadata for heuristic mode...");
+
+        // FIX: Use DtoPackageClassifier to traverse and classify dependencies
+        DtoPackageClassifier classifier = new DtoPackageClassifier(
+                requestModels, responseModels, sharedModels, copybookModels);
+
+        classifier.classifyHeuristicDependencies(requestCopybook, responseCopybook,
+                allModelsToGenerate);
+
+        // Build metadata for all models (now includes dependencies)
         Set<String> usedClassNames = new HashSet<>();
+        DtoMetadataBuilder metadataBuilder = new DtoMetadataBuilder(
+                config, classifier, usedClassNames, requestCopybook, responseCopybook);
+
+        for (CopybookModel model : allModelsToGenerate) {
+            String signature = StructuralSignatureCalculator.calculateSignature(model);
+            signatureToModels.computeIfAbsent(signature, k -> new ArrayList<>()).add(model);
+
+            DtoMetadata metadata = metadataBuilder.buildForModel(model);
+            dtoMetadataMap.put(model, metadata);
+        }
+
+        log.info("Heuristic mode metadata built: {} DTOs total", dtoMetadataMap.size());
+    }
+
+    private void buildMetadataForFolderMode() {
+        Set<String> usedClassNames = new HashSet<>();
+        DtoPackageClassifier classifier = new DtoPackageClassifier(
+                requestModels, responseModels, sharedModels, copybookModels);
+        DtoMetadataBuilder metadataBuilder = new DtoMetadataBuilder(
+                config, classifier, usedClassNames, requestCopybook, responseCopybook);
 
         // Step 1: Build metadata for all models and calculate structural signatures
         for (CopybookModel model : allModelsToGenerate) {
             String signature = StructuralSignatureCalculator.calculateSignature(model);
             signatureToModels.computeIfAbsent(signature, k -> new ArrayList<>()).add(model);
 
-            String packageType = determinePackageType(model);
-            String className = determineClassName(model, packageType, usedClassNames);
-            usedClassNames.add(className);
-
-            DtoMetadata metadata = DtoMetadata.builder()
-                    .copybookModel(model)
-                    .className(className)
-                    .originalClassName(toPascalCase(model.getName()))
-                    .packageType(packageType)
-                    .structuralSignature(signature)
-                    .isWrapper(false)
-                    .isDeduped(false)
-                    .byteLength(model.calculateTotalByteLength())
-                    .build();
-
+            DtoMetadata metadata = metadataBuilder.buildForModel(model);
             dtoMetadataMap.put(model, metadata);
         }
 
@@ -446,7 +478,7 @@ public class ProjectGenerator {
                 DtoMetadata metadata = DtoMetadata.builder()
                         .copybookModel(model)
                         .className(className)
-                        .originalClassName(toPascalCase(model.getName()))
+                        .originalClassName(NamingUtil.toPascalCase(model.getName()))
                         .packageType("layout")
                         .structuralSignature(signature)
                         .isWrapper(false)
@@ -457,59 +489,6 @@ public class ProjectGenerator {
                 dtoMetadataMap.put(model, metadata);
             }
         }
-
-        // Step 2: Detect structural duplicates and mark for deduplication
-        int dedupedCount = 0;
-        for (Map.Entry<String, List<CopybookModel>> entry : signatureToModels.entrySet()) {
-            if (entry.getValue().size() > 1) {
-                List<CopybookModel> duplicates = entry.getValue();
-                // Pick the first one as the canonical DTO (prefer shared, then alphabetically first)
-                CopybookModel canonical = duplicates.stream()
-                        .min(Comparator.comparing((CopybookModel m) -> {
-                            DtoMetadata meta = dtoMetadataMap.get(m);
-                            if ("shared".equals(meta.getPackageType())) return 0;
-                            if ("request".equals(meta.getPackageType())) return 1;
-                            if ("response".equals(meta.getPackageType())) return 2;
-                            return 3; // layout
-                        }).thenComparing(CopybookModel::getName))
-                        .orElse(duplicates.get(0));
-
-                DtoMetadata canonicalMeta = dtoMetadataMap.get(canonical);
-                // Move canonical to shared package if not already
-                if (!"shared".equals(canonicalMeta.getPackageType())) {
-                    canonicalMeta.setPackageType("shared");
-                    if (!sharedModels.contains(canonical)) {
-                        sharedModels.add(canonical);
-                        requestModels.remove(canonical);
-                        responseModels.remove(canonical);
-                    }
-                }
-
-                // Mark others as deduped
-                for (CopybookModel dup : duplicates) {
-                    if (dup != canonical) {
-                        DtoMetadata dupMeta = dtoMetadataMap.get(dup);
-                        dupMeta.setDeduped(true);
-                        dupMeta.setDedupedToClassName(canonicalMeta.getClassName());
-                        dedupedCount++;
-                        log.info("DEDUPED DTO: {} and {} share signature {} -> using shared type {}",
-                                canonical.getName(), dup.getName(), entry.getKey(), canonicalMeta.getClassName());
-                    }
-                }
-            }
-        }
-
-        if (dedupedCount > 0) {
-            log.info("  Deduped {} DTOs through structural analysis", dedupedCount);
-        }
-
-        // Step 3: Detect inheritance relationships if enabled
-        if (config.isInferInheritance()) {
-            detectInheritance();
-        }
-
-        log.info("DTO metadata built successfully: {} unique DTOs, {} deduped",
-                dtoMetadataMap.size() - dedupedCount, dedupedCount);
     }
 
     private String determinePackageType(CopybookModel model) {
@@ -819,24 +798,27 @@ public class ProjectGenerator {
      * Generate multi-copybook wrapper classes (ApiRequest/ApiResponse).
      * These wrappers contain fields for each copybook DTO in the request/response sets.
      */
+    /**
+     * FIX: Generate wrapper classes based on DTO count, not folder mode.
+     */
     private void generateWrapperClasses(Path projectDir) throws IOException {
-        boolean usingFolderBasedSelection = config.getRequestCopybookDir() != null || config.getResponseCopybookDir() != null;
+        // FIX: Use WrapperDecisionMaker instead of checking folder mode
+        boolean shouldGenerateRequest = WrapperDecisionMaker.shouldGenerateRequestWrapper(
+                requestModels, sharedModels, dtoMetadataMap);
 
-        if (!usingFolderBasedSelection) {
-            // Heuristic mode: no wrappers needed
-            return;
+        if (shouldGenerateRequest) {
+            List<DtoMetadata> requestDtos = getRequestDtosForWrapper();
+            WrapperGenerator wrapperGen = new WrapperGenerator(config.getBasePackage(), config.getProgramId());
+            wrapperGen.generateApiRequestWrapper(projectDir, requestDtos);
         }
 
-        // Generate ApiRequest wrapper if we have multiple request copybooks
-        List<DtoMetadata> requestDtos = getRequestDtosForWrapper();
-        if (requestDtos.size() > 1) {
-            generateApiRequestWrapper(projectDir, requestDtos);
-        }
+        boolean shouldGenerateResponse = WrapperDecisionMaker.shouldGenerateResponseWrapper(
+                responseModels, sharedModels, dtoMetadataMap);
 
-        // Generate ApiResponse wrapper if we have multiple response copybooks
-        List<DtoMetadata> responseDtos = getResponseDtosForWrapper();
-        if (responseDtos.size() > 1) {
-            generateApiResponseWrapper(projectDir, responseDtos);
+        if (shouldGenerateResponse) {
+            List<DtoMetadata> responseDtos = getResponseDtosForWrapper();
+            WrapperGenerator wrapperGen = new WrapperGenerator(config.getBasePackage(), config.getProgramId());
+            wrapperGen.generateApiResponseWrapper(projectDir, responseDtos);
         }
     }
 
@@ -1053,6 +1035,7 @@ public class ProjectGenerator {
             content.append("import lombok.ToString;\n");
         }
         content.append("import com.fasterxml.jackson.annotation.JsonProperty;\n");
+        content.append("import jakarta.validation.Valid;\n");
         content.append("import jakarta.validation.constraints.*;\n");
         content.append("import java.math.BigDecimal;\n");
         content.append("import java.util.List;\n\n");
@@ -1151,11 +1134,12 @@ public class ProjectGenerator {
                     sb.append("import java.util.List;\n");
                     sb.append("import java.util.ArrayList;\n");
 
-                    // Import enums
+                    // FIX: Import enums from the SAME package
                     for (FieldNode field : getAllFieldsInGroup(group)) {
                         if (field.hasEnum88Values() && !field.isFiller()) {
                             sb.append("import ").append(config.getBasePackage()).append(".model.")
-                                    .append(toPascalCase(field.getName())).append("Enum;\n");
+                                    .append(subPackage).append(".")
+                                    .append(NamingUtil.toPascalCase(field.getName())).append("Enum;\n");
                         }
                     }
                     sb.append("\n");
@@ -1302,82 +1286,13 @@ public class ProjectGenerator {
         return field.toJavaFieldName();
     }
     
+    /**
+     * FIX: Generate enums using EnumGenerator - enums go into the SAME package as the DTO.
+     */
     private void generateEnumClasses(Path projectDir) throws IOException {
-        String basePackagePath = config.getBasePackage().replace('.', '/');
-        Set<String> generatedEnumClasses = new HashSet<>();
-
-        for (CopybookModel model : copybookModels) {
-            for (FieldNode field : model.getAllFields()) {
-                if (field.hasEnum88Values()) {
-                    String enumName = toPascalCase(field.getName()) + "Enum";
-
-                    // Check for enum class name collisions
-                    if (!generatedEnumClasses.add(enumName)) {
-                    		log.warn("Skipping duplicate enum class generation: {} for field {} in copybook {}. " +
-                                "This may indicate multiple fields with the same name across copybooks.",
-                                enumName, field.getName(), model.getName());
-                        continue;
-                    }
-
-                    Path enumFile = projectDir.resolve(
-                            "src/main/java/" + basePackagePath + "/model/" + enumName + ".java"
-                    );
-
-                    StringBuilder sb = new StringBuilder();
-                    sb.append("package ").append(config.getBasePackage()).append(".model;\n\n");
-                    sb.append("import lombok.Getter;\n");
-                    sb.append("import lombok.RequiredArgsConstructor;\n\n");
-
-                    sb.append("/**\n");
-                    sb.append(" * Generated enum from 88-level values of ").append(field.getName()).append("\n");
-                    sb.append(" */\n");
-                    sb.append("@Getter\n");
-                    sb.append("@RequiredArgsConstructor\n");
-                    sb.append("public enum ").append(enumName).append(" {\n");
-
-                    List<Enum88Node> enums = field.getEnum88Values();
-                    Set<String> usedConstantNames = new HashSet<>();
-                    List<String> validConstants = new ArrayList<>();
-
-                    // First pass: collect valid constant names and check for collisions
-                    for (Enum88Node enum88 : enums) {
-                        String constName = enum88.toJavaEnumConstant();
-                        String value = enum88.getPrimaryValue();
-
-                        // Check for enum constant name collisions
-                        if (!usedConstantNames.add(constName)) {
-                        		log.warn("Duplicate enum constant name detected: {} in enum {} (from 88-level '{}' with value '{}'). " +
-                                    "This constant will be skipped.",
-                                    constName, enumName, enum88.getName(), value);
-                            continue;
-                        }
-
-                        validConstants.add(constName + "(\"" + value + "\")");
-                    }
-
-                    // Second pass: generate enum constants
-                    for (int i = 0; i < validConstants.size(); i++) {
-                        sb.append("    ").append(validConstants.get(i));
-                        sb.append(i < validConstants.size() - 1 ? ",\n" : ";\n\n");
-                    }
-                    
-                    sb.append("    private final String value;\n\n");
-                    
-                    // fromValue method
-                    sb.append("    public static ").append(enumName).append(" fromValue(String value) {\n");
-                    sb.append("        for (").append(enumName).append(" e : values()) {\n");
-                    sb.append("            if (e.value.equals(value)) {\n");
-                    sb.append("                return e;\n");
-                    sb.append("            }\n");
-                    sb.append("        }\n");
-                    sb.append("        throw new IllegalArgumentException(\"Unknown value: \" + value);\n");
-                    sb.append("    }\n");
-                    sb.append("}\n");
-
-                    safeWriteString(enumFile, sb.toString());
-                }
-            }
-        }
+        EnumGenerator enumGenerator = new EnumGenerator(
+                config.getBasePackage(), mappingDoc, dtoMetadataMap);
+        enumGenerator.generateEnums(projectDir);
     }
     
     private void generateSerializationClasses(Path projectDir) throws IOException {
