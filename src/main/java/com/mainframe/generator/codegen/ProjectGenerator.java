@@ -534,16 +534,11 @@ public class ProjectGenerator {
         }
 
         // Collision detected - disambiguate
-        String sourcePath = model.getSourcePath();
-        int hash = Math.abs(sourcePath.hashCode()) % 100;
-        String disambiguated = baseName + "_" + hash;
-        while (usedNames.contains(disambiguated)) {
-            hash++;
-            disambiguated = baseName + "_" + hash;
+        if (!usedNames.contains(baseName)) {
+            return baseName;
         }
-        log.warn("COLLISION: Class name '{}' already used. Copybook '{}' will use '{}' (hash from path: {})",
-                baseName, model.getName(), disambiguated, sourcePath);
-        return disambiguated;
+        return disambiguateClassName(baseName, model, usedNames);
+
     }
 
     private void detectInheritance() {
@@ -1040,7 +1035,9 @@ public class ProjectGenerator {
         );
 
         // Generate nested classes first (for OCCURS)
-        generateNestedClasses(projectDir, model.getRootGroup(), packageType);
+        Set<String> generatedNested = new HashSet<>();
+        generateNestedClasses(projectDir, model.getRootGroup(), packageType, generatedNested);
+
 
         // Build class content with optional inheritance
         StringBuilder content = new StringBuilder();
@@ -1112,173 +1109,6 @@ public class ProjectGenerator {
         }
         log.warn("Class name collision for '{}', using '{}'", baseName, disambiguated);
         return disambiguated;
-    }
-
-    /**
-     * Apply inheritance factoring to models.
-     * Detects when DTO structure A is a strict prefix/subset of DTO structure B,
-     * and generates class B extends A with only the extra fields.
-     *
-     * IMPLEMENTATION NOTE: This is a complex feature that requires:
-     * 1. Field-level comparison (names, types, order, constraints)
-     * 2. Handling REDEFINES (should NOT infer inheritance if either uses REDEFINES)
-     * 3. Largest parent selection when multiple candidates exist
-     * 4. Serializer generation respecting inherited field ordering
-     *
-     * Current implementation: Basic detection with conservative rules.
-     * Future enhancement: Full implementation of inheritance hierarchy generation.
-     */
-    private void applyInheritanceFactoring() {
-        if (allModelsToGenerate.isEmpty()) {
-            return;
-        }
-
-        log.info("Inheritance factoring enabled (experimental)");
-        log.warn("NOTE: Inheritance factoring is currently in experimental mode.");
-        log.warn("      Generation will proceed without inheritance for safety.");
-        log.warn("      Full implementation requires careful handling of:");
-        log.warn("      - Field compatibility checks (types, constraints, order)");
-        log.warn("      - REDEFINES exclusion");
-        log.warn("      - Serializer ordering for parent/child fields");
-
-        // Basic detection logic (conservative, no actual inheritance generation yet)
-        List<CopybookModel> modelsList = new ArrayList<>(allModelsToGenerate);
-        for (int i = 0; i < modelsList.size(); i++) {
-            for (int j = 0; j < modelsList.size(); j++) {
-                if (i == j) continue;
-
-                CopybookModel potentialParent = modelsList.get(i);
-                CopybookModel potentialChild = modelsList.get(j);
-
-                // Check if potentialParent is a prefix of potentialChild
-                if (isPrefixStructure(potentialParent, potentialChild)) {
-                    log.debug("Detected potential inheritance: {} could extend {}",
-                            potentialChild.getName(), potentialParent.getName());
-                    // TODO: Generate inheritance hierarchy
-                }
-            }
-        }
-    }
-
-    /**
-     * Check if parentModel is a strict prefix of childModel
-     * (same fields in same order, child has additional fields)
-     */
-    private boolean isPrefixStructure(CopybookModel parentModel, CopybookModel childModel) {
-        // Conservative check: Don't infer inheritance if either uses REDEFINES
-        if (hasRedefines(parentModel) || hasRedefines(childModel)) {
-            return false;
-        }
-
-        List<FieldNode> parentFields = parentModel.getAllFields();
-        List<FieldNode> childFields = childModel.getAllFields();
-
-        // Child must have more fields than parent
-        if (childFields.size() <= parentFields.size()) {
-            return false;
-        }
-
-        // Check if first N fields of child match parent fields exactly
-        for (int i = 0; i < parentFields.size(); i++) {
-            FieldNode parentField = parentFields.get(i);
-            FieldNode childField = childFields.get(i);
-
-            // Compare field names (after mapping)
-            String parentName = getJavaFieldName(parentField);
-            String childName = getJavaFieldName(childField);
-            if (!parentName.equals(childName)) {
-                return false;
-            }
-
-            // Compare field types
-            String parentType = getJavaType(parentField);
-            String childType = getJavaType(childField);
-            if (!parentType.equals(childType)) {
-                return false;
-            }
-
-            // Compare byte lengths
-            if (parentField.getByteLength() != childField.getByteLength()) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private boolean hasRedefines(CopybookModel model) {
-        for (FieldNode field : model.getAllFields()) {
-            if (field.getRedefinesTarget() != null && !field.getRedefinesTarget().isBlank()) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private void generateDtoClass(Path projectDir, CopybookModel copybook, String subPackage, String suffix,
-                                   String className, boolean isTestMode) throws IOException {
-        String basePackagePath = config.getBasePackage().replace('.', '/');
-
-        log.info("Generating DTO class: {} from copybook: {}", className, copybook.getName());
-        log.info("  Root group children count: {}",
-                copybook.getRootGroup() != null ? copybook.getRootGroup().getChildren().size() : 0);
-
-        // First, generate all nested classes for OCCURS groups
-        Set<String> nestedClassNames = new HashSet<>();
-        generateNestedClasses(projectDir, copybook.getRootGroup(), subPackage, nestedClassNames);
-
-        // Collect enum types that need to be imported
-        Set<String> enumImports = new HashSet<>();
-        for (FieldNode field : copybook.getAllFields()) {
-            if (field.hasEnum88Values() && !field.isFiller() && !mappingDoc.shouldIgnore(field.getName())) {
-                enumImports.add(config.getBasePackage() + ".model." + toPascalCase(field.getName()) + "Enum");
-            }
-        }
-
-        // Build main DTO class
-        Path classFile = projectDir.resolve(
-                "src/main/java/" + basePackagePath + "/model/" + subPackage + "/" + className + ".java"
-        );
-
-        StringBuilder sb = new StringBuilder();
-
-        // Package and imports
-        sb.append("package ").append(config.getBasePackage()).append(".model.").append(subPackage).append(";\n\n");
-        sb.append("import jakarta.validation.Valid;\n");
-        sb.append("import jakarta.validation.constraints.*;\n");
-        sb.append("import lombok.*;\n");
-        sb.append("import com.fasterxml.jackson.annotation.JsonProperty;\n");
-        sb.append("import java.math.BigDecimal;\n");
-        sb.append("import java.time.LocalDate;\n");
-        sb.append("import java.util.List;\n");
-        sb.append("import java.util.ArrayList;\n");
-
-        // Import enum classes
-        for (String enumImport : enumImports) {
-            sb.append("import ").append(enumImport).append(";\n");
-        }
-        sb.append("\n");
-
-        // Class declaration
-        sb.append("/**\n");
-        sb.append(" * Generated from copybook: ").append(copybook.getName()).append("\n");
-        sb.append(" * Total byte length: ").append(copybook.calculateTotalByteLength()).append("\n");
-        sb.append(" */\n");
-        sb.append("@Data\n");
-        sb.append("@NoArgsConstructor\n");
-        sb.append("@AllArgsConstructor\n");
-        sb.append("@Builder\n");
-        sb.append("public class ").append(className).append(" {\n\n");
-
-        // Generate fields from root group children (hierarchical, not flattened)
-        if (copybook.getRootGroup() != null) {
-            generateDtoFields(sb, copybook.getRootGroup().getChildren(), "    ", nestedClassNames);
-        }
-
-        sb.append("}\n");
-
-        safeWriteString(classFile, sb.toString());
-        log.info("  Generated main DTO: {}", className);
     }
 
     /**
@@ -2143,11 +1973,6 @@ public class ProjectGenerator {
 
         safeWriteString(outputPath, sb.toString());
         log.info("  Generated wrapper serializer: {}", outputPath);
-    }
-
-    private String capitalize(String str) {
-        if (str == null || str.isEmpty()) return str;
-        return str.substring(0, 1).toUpperCase() + str.substring(1);
     }
     
     private void generateConcreteSerializer(Path projectDir, CopybookModel copybook, String suffix)
@@ -3610,7 +3435,6 @@ public class ProjectGenerator {
     }
 
     private int generateTortureTests(Path projectDir) throws IOException {
-        String basePackagePath = config.getBasePackage().replace('.', '/');
         int testCount = 0;
 
         // Generate torture tests for all models
