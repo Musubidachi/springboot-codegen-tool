@@ -411,7 +411,7 @@ public class ProjectGenerator {
     
     private void generatePom(Path projectDir) throws IOException {
         String pom = generatePomContent();
-        Files.writeString(projectDir.resolve("pom.xml"), pom);
+        safeWriteString(projectDir.resolve("pom.xml"), pom);
     }
     
     private String generatePomContent() {
@@ -565,7 +565,7 @@ public class ProjectGenerator {
                 config.getBasePackage()
         );
         
-        Files.writeString(projectDir.resolve("src/main/resources/application.yml"), yml);
+        safeWriteString(projectDir.resolve("src/main/resources/application.yml"), yml);
         
         // Also create test application.yml
         String testYml = """
@@ -579,7 +579,7 @@ public class ProjectGenerator {
                     port: 0
                     framing: LENGTH_PREFIX_2
                 """;
-        Files.writeString(projectDir.resolve("src/test/resources/application.yml"), testYml);
+        safeWriteString(projectDir.resolve("src/test/resources/application.yml"), testYml);
     }
     
     private int generateModelClasses(Path projectDir) throws IOException {
@@ -864,7 +864,7 @@ public class ProjectGenerator {
 
         sb.append("}\n");
 
-        Files.writeString(classFile, sb.toString());
+        safeWriteString(classFile, sb.toString());
         log.info("  Generated main DTO: {}", className);
     }
 
@@ -931,7 +931,7 @@ public class ProjectGenerator {
                     generateDtoFields(sb, group.getChildren(), "    ", generated);
 
                     sb.append("}\n");
-                    Files.writeString(nestedFile, sb.toString());
+                    safeWriteString(nestedFile, sb.toString());
                 }
 
                 // Recurse into nested groups
@@ -1130,8 +1130,8 @@ public class ProjectGenerator {
                     sb.append("        throw new IllegalArgumentException(\"Unknown value: \" + value);\n");
                     sb.append("    }\n");
                     sb.append("}\n");
-                    
-                    Files.writeString(enumFile, sb.toString());
+
+                    safeWriteString(enumFile, sb.toString());
                 }
             }
         }
@@ -1157,8 +1157,8 @@ public class ProjectGenerator {
                     int getByteLength();
                 }
                 """, config.getBasePackage());
-        
-        Files.writeString(serializerInterface, serializerContent);
+
+        safeWriteString(serializerInterface, serializerContent);
         
         // Generate EbcdicUtils
         Path ebcdicUtils = projectDir.resolve(
@@ -1389,8 +1389,8 @@ public class ProjectGenerator {
                     }
                 }
                 """, config.getBasePackage(), config.getEncoding().toUpperCase());
-        
-        Files.writeString(ebcdicUtils, ebcdicContent);
+
+        safeWriteString(ebcdicUtils, ebcdicContent);
 
         // Generate concrete serializers
         boolean usingFolderBasedSelection = config.getRequestCopybookDir() != null || config.getResponseCopybookDir() != null;
@@ -1534,7 +1534,7 @@ public class ProjectGenerator {
         
         sb.append("}\n");
 
-        Files.writeString(serializerFile, sb.toString());
+        safeWriteString(serializerFile, sb.toString());
     }
 
     private void generateConcreteSerializerForModel(Path projectDir, CopybookModel copybook, String suffix,
@@ -1618,7 +1618,7 @@ public class ProjectGenerator {
 
         sb.append("}\n");
 
-        Files.writeString(serializerFile, sb.toString());
+        safeWriteString(serializerFile, sb.toString());
     }
 
     private void generateSerializeFields(StringBuilder sb, GroupNode group, String objRef, String indent) {
@@ -2104,7 +2104,7 @@ public class ProjectGenerator {
                 dtoClassName
         );
         
-        Files.writeString(routeFile, routeContent);
+        safeWriteString(routeFile, routeContent);
     }
     
     private void generateController(Path projectDir) throws IOException {
@@ -2156,7 +2156,7 @@ public class ProjectGenerator {
                 dtoClassName
         );
         
-        Files.writeString(controllerFile, controllerContent);
+        safeWriteString(controllerFile, controllerContent);
         
         // Generate exception handler
         Path handlerFile = projectDir.resolve(
@@ -2210,7 +2210,7 @@ public class ProjectGenerator {
                 }
                 """, config.getBasePackage());
         
-        Files.writeString(handlerFile, handlerContent);
+        safeWriteString(handlerFile, handlerContent);
     }
     
     private void generateTcpTransport(Path projectDir) throws IOException {
@@ -2232,7 +2232,7 @@ public class ProjectGenerator {
                 }
                 """, config.getBasePackage());
         
-        Files.writeString(transportInterface, interfaceContent);
+        safeWriteString(transportInterface, interfaceContent);
         
         // TcpMainframeTransport implementation
         Path transportImpl = projectDir.resolve(
@@ -2307,7 +2307,7 @@ public class ProjectGenerator {
                 }
                 """, config.getBasePackage(), config.getBasePackage());
         
-        Files.writeString(transportImpl, implContent);
+        safeWriteString(transportImpl, implContent);
         
         // Generate framing classes
         generateFramingClasses(projectDir);
@@ -2336,7 +2336,7 @@ public class ProjectGenerator {
                 }
                 """, config.getBasePackage());
         
-        Files.writeString(framingInterface, interfaceContent);
+        safeWriteString(framingInterface, interfaceContent);
         
         // LengthPrefixFraming
         Path lengthPrefixFraming = projectDir.resolve(
@@ -2404,7 +2404,7 @@ public class ProjectGenerator {
                 }
                 """, config.getBasePackage());
         
-        Files.writeString(lengthPrefixFraming, lengthPrefixContent);
+        safeWriteString(lengthPrefixFraming, lengthPrefixContent);
         
         // FixedLengthFraming
         Path fixedFraming = projectDir.resolve(
@@ -2449,7 +2449,7 @@ public class ProjectGenerator {
                 }
                 """, config.getBasePackage());
         
-        Files.writeString(fixedFraming, fixedContent);
+        safeWriteString(fixedFraming, fixedContent);
         
         // FramingConfig
         Path framingConfig = projectDir.resolve(
@@ -2487,7 +2487,7 @@ public class ProjectGenerator {
                 }
                 """, config.getBasePackage(), config.getBasePackage(), responseLength);
         
-        Files.writeString(framingConfig, configContent);
+        safeWriteString(framingConfig, configContent);
     }
     
     private void generateTcpEmulator(Path projectDir) throws IOException {
@@ -2606,7 +2606,7 @@ public class ProjectGenerator {
                 }
                 """, config.getBasePackage(), config.getBasePackage(), responseLength);
         
-        Files.writeString(emulatorFile, emulatorContent);
+        safeWriteString(emulatorFile, emulatorContent);
     }
     
     private void generateTests(Path projectDir) throws IOException {
@@ -2693,7 +2693,7 @@ public class ProjectGenerator {
                 dtoClassName, dtoClassName, dtoClassName
         );
         
-        Files.writeString(dtoTestFile, dtoTestContent);
+        safeWriteString(dtoTestFile, dtoTestContent);
         
         // Generate serializer test
         Path serializerTestFile = projectDir.resolve(
@@ -2754,7 +2754,7 @@ public class ProjectGenerator {
                 requestLength
         );
         
-        Files.writeString(serializerTestFile, serializerTestContent);
+        safeWriteString(serializerTestFile, serializerTestContent);
         
         // Generate TCP test
         Path tcpTestFile = projectDir.resolve(
@@ -2815,7 +2815,7 @@ public class ProjectGenerator {
                 }
                 """, config.getBasePackage(), config.getBasePackage());
         
-        Files.writeString(tcpTestFile, tcpTestContent);
+        safeWriteString(tcpTestFile, tcpTestContent);
         
         // Generate Controller test
         Path controllerTestFile = projectDir.resolve(
@@ -2864,7 +2864,7 @@ public class ProjectGenerator {
                 }
                 """, config.getBasePackage(), config.getBasePackage(), config.getProgramIdPath());
         
-        Files.writeString(controllerTestFile, controllerTestContent);
+        safeWriteString(controllerTestFile, controllerTestContent);
     }
 
     private int generateTortureTests(Path projectDir) throws IOException {
@@ -2994,7 +2994,7 @@ public class ProjectGenerator {
                 dtoClassName
         );
 
-        Files.writeString(testFile, testContent);
+        safeWriteString(testFile, testContent);
     }
 
     private void generateSampleFiles(Path projectDir) throws IOException {
@@ -3024,7 +3024,7 @@ public class ProjectGenerator {
         
         json.append("}");
         
-        Files.writeString(sampleRequest, json.toString());
+        safeWriteString(sampleRequest, json.toString());
     }
     
     private String generateSampleValue(FieldNode field) {
@@ -3072,7 +3072,7 @@ public class ProjectGenerator {
                 }
                 """, config.getBasePackage());
         
-        Files.writeString(appFile, appContent);
+        safeWriteString(appFile, appContent);
     }
     
     private boolean runMavenTests(Path projectDir) {
@@ -3102,7 +3102,19 @@ public class ProjectGenerator {
     }
     
     // Utility methods
-    
+
+    /**
+     * Safely write a string to a file, creating parent directories if needed.
+     * This prevents NoSuchFileException when writing to paths that don't exist yet.
+     */
+    private void safeWriteString(Path filePath, String content) throws IOException {
+        Path parentDir = filePath.getParent();
+        if (parentDir != null) {
+            Files.createDirectories(parentDir);
+        }
+        safeWriteString(filePath, content);
+    }
+
     private String toPascalCase(String input) {
         if (input == null || input.isEmpty()) {
             return input;
