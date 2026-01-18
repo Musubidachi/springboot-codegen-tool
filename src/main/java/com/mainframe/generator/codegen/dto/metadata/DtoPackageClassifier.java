@@ -77,16 +77,15 @@ public class DtoPackageClassifier {
         deps.add(model);
 
         // Find COPY directives in the model
-        model.accept(node -> {
-            if (node instanceof CopyDirectiveNode) {
-                CopyDirectiveNode copyNode = (CopyDirectiveNode) node;
+        if (model.getCopyDirectives() != null) {
+            for (CopyDirectiveNode copyNode : model.getCopyDirectives()) {
                 String copybookName = copyNode.getCopybookName();
                 CopybookModel referenced = copybooksByName.get(copybookName.toLowerCase());
                 if (referenced != null) {
                     resolveDependenciesRecursive(referenced, deps, visited);
                 }
             }
-        });
+        }
     }
 
     private Set<CopybookModel> findIntersection(Set<CopybookModel> set1, Set<CopybookModel> set2) {
