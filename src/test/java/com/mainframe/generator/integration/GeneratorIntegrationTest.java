@@ -228,4 +228,124 @@ class GeneratorIntegrationTest {
         assertThat(result.getSizeCount()).isGreaterThan(0);
         assertThat(result.getDigitsCount()).isGreaterThan(0);
     }
+
+    /**
+     * Regression test for NoSuchFileException bug.
+     * Tests that generation works from a clean temp directory with no pre-created package folders.
+     * Also verifies that serializers are generated for all copybooks in test mode,
+     * and that COMP-1/COMP-2 fields with null PictureClause are handled correctly.
+     */
+    @Test
+    void testGenerateIntoCleanDirectoryWithTestMode() throws IOException {
+        // Create copybooks with various COBOL constructs
+        Path copybookDir = tempDir.resolve("copybooks");
+        Files.createDirectories(copybookDir);
+
+        // Simple copybook
+        String simpleCopybook = """
+               01  SIMPLE-RECORD.
+                   05  SIMPLE-FIELD        PIC X(10).
+                   05  SIMPLE-NUMBER       PIC 9(5).
+            """;
+        Files.writeString(copybookDir.resolve("SIMPLE.cpy"), simpleCopybook);
+
+        // Copybook with COMP-1 and COMP-2 (no PIC clause)
+        String floatCopybook = """
+               01  FLOAT-RECORD.
+                   05  TEMPERATURE         COMP-1.
+                   05  PRESSURE            COMP-2.
+                   05  LABEL               PIC X(20).
+            """;
+        Files.writeString(copybookDir.resolve("FLOAT.cpy"), floatCopybook);
+
+        // Copybook with OCCURS
+        String occursCopybook = """
+               01  ARRAY-RECORD.
+                   05  ITEM-COUNT          PIC 9(3).
+                   05  ITEMS OCCURS 5 TIMES.
+                       10  ITEM-NAME       PIC X(10).
+                       10  ITEM-VALUE      PIC 9(5).
+            """;
+        Files.writeString(copybookDir.resolve("ARRAY.cpy"), occursCopybook);
+
+        // Use a completely fresh output directory (no pre-created subdirectories)
+        Path cleanOutputDir = tempDir.resolve("clean-output");
+        // Intentionally NOT creating any subdirectories - let generator create them
+
+        // Configure generator in test mode
+        GeneratorConfig config = GeneratorConfig.builder()
+                .projectName("CleanDirTest")
+                .copybookDir(copybookDir)
+                .programId("TEST-PROG")
+                .encoding("cp037")
+                .tcpHost("localhost")
+                .tcpPort(5000)
+                .tcpConnectTimeout(3000)
+                .tcpReadTimeout(5000)
+                .framingMode(FramingMode.LENGTH_PREFIX_2)
+                .outputDir(cleanOutputDir)
+                .testMode(true) // Enable test mode to generate serializers for all copybooks
+                .force(true)
+                .skipTests(true)
+                .build();
+
+        // Generate project
+        ProjectGenerator generator = new ProjectGenerator(config);
+        GeneratorResult result = generator.generate();
+
+        // Verify generation succeeded
+        assertThat(result.isSuccess())
+                .as("Generation should succeed even in clean directory")
+                .isTrue();
+
+        // Verify all copybooks were parsed
+        assertThat(result.getCopybooksParsed())
+                .as("All 3 copybooks should be parsed")
+                .isEqualTo(3);
+
+        // Verify directory structure was created
+        Path projectDir = cleanOutputDir.resolve("CleanDirTest");
+        assertThat(Files.exists(projectDir)).isTrue();
+
+        // Verify serializers were generated for all copybooks in test mode
+        String basePackagePath = "com/cleandirtest";
+        Path layoutPackage = projectDir.resolve("src/main/java/" + basePackagePath + "/util/layout");
+        assertThat(Files.exists(layoutPackage))
+                .as("Layout package should be created")
+                .isTrue();
+
+        // Check for serializer files
+        assertThat(Files.exists(layoutPackage.resolve("SimpleSerializer.java")))
+                .as("SimpleSerializer should be generated")
+                .isTrue();
+        assertThat(Files.exists(layoutPackage.resolve("FloatSerializer.java")))
+                .as("FloatSerializer should be generated")
+                .isTrue();
+        assertThat(Files.exists(layoutPackage.resolve("ArraySerializer.java")))
+                .as("ArraySerializer should be generated")
+                .isTrue();
+
+        // Verify the float serializer contains COMP-1 and COMP-2 handling
+        String floatSerializerContent = Files.readString(layoutPackage.resolve("FloatSerializer.java"));
+        assertThat(floatSerializerContent)
+                .as("FloatSerializer should handle COMP-1")
+                .contains("floatToBytes")
+                .contains("bytesToFloat");
+        assertThat(floatSerializerContent)
+                .as("FloatSerializer should handle COMP-2")
+                .contains("doubleToBytes")
+                .contains("bytesToDouble");
+
+        // Verify DTO classes were also generated in the layout package
+        Path modelLayoutPackage = projectDir.resolve("src/main/java/" + basePackagePath + "/model/layout");
+        assertThat(Files.exists(modelLayoutPackage)).isTrue();
+        assertThat(Files.exists(modelLayoutPackage.resolve("Simple.java"))).isTrue();
+        assertThat(Files.exists(modelLayoutPackage.resolve("Float.java"))).isTrue();
+        assertThat(Files.exists(modelLayoutPackage.resolve("Array.java"))).isTrue();
+
+        // Verify nested class for OCCURS was generated
+        assertThat(Files.exists(modelLayoutPackage.resolve("ItemsItem.java")))
+                .as("Nested class for OCCURS should be generated")
+                .isTrue();
+    }
 }
