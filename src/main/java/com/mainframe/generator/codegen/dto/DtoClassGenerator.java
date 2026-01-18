@@ -119,7 +119,7 @@ public class DtoClassGenerator {
                 validationGenerator, importManager);
 
         CopybookModel model = metadata.getCopybookModel();
-        fieldGenerator.generateFields(fieldsSb, model.getChildren(), "    ", nestedClassNames);
+        fieldGenerator.generateFields(fieldsSb, model.getRootGroup().getChildren(), "    ", nestedClassNames);
 
         return fieldsSb.toString();
     }

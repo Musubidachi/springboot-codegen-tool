@@ -63,7 +63,7 @@ public class DtoFieldGenerator {
 
     private boolean shouldGenerateGroupAsField(GroupNode group, Set<String> nestedClassNames) {
         String nestedClassName = NamingUtil.toPascalCase(group.getName()) + "Item";
-        return group.isOccurs() && nestedClassNames.contains(nestedClassName);
+        return group.getOccursCount() > 1 && nestedClassNames.contains(nestedClassName);
     }
 
     private void generateField(StringBuilder sb, FieldNode field, String indent, Set<String> usedFieldNames) {
@@ -74,8 +74,10 @@ public class DtoFieldGenerator {
 
         addImportsForField(field, javaType);
 
-        String annotations = validationGenerator.generateConstraints(field);
-        sb.append(annotations);
+        var constraints = validationGenerator.generateConstraints(field, true);
+        for (var constraint : constraints) {
+            sb.append(indent).append(constraint.toAnnotation()).append("\n");
+        }
         sb.append(indent).append("private ").append(javaType).append(" ").append(fieldName).append(";\n");
     }
 
