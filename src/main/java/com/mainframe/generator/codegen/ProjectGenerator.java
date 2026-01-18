@@ -883,7 +883,7 @@ public class ProjectGenerator {
 
                     // Avoid duplicate generation
                     if (generated.contains(nestedClassName)) {
-                        logger.warn("Skipping duplicate nested class generation: {} for group {} (already generated). " +
+                    		log.warn("Skipping duplicate nested class generation: {} for group {} (already generated). " +
                                 "This may indicate a naming collision in the copybook structure.",
                                 nestedClassName, group.getName());
                         continue;
@@ -969,7 +969,7 @@ public class ProjectGenerator {
 
                 // Check for field name collisions
                 if (!usedFieldNames.add(fieldName)) {
-                    logger.warn("Duplicate field name detected: '{}' (from COBOL field '{}') in DTO. " +
+                		log.warn("Duplicate field name detected: '{}' (from COBOL field '{}') in DTO. " +
                             "This may cause compilation errors. Consider using field mapping to rename.",
                             fieldName, field.getName());
                 }
@@ -997,7 +997,7 @@ public class ProjectGenerator {
 
                     // Check for field name collisions
                     if (!usedFieldNames.add(fieldName)) {
-                        logger.warn("Duplicate field name detected: '{}' (from COBOL group '{}') in DTO. " +
+                    		log.warn("Duplicate field name detected: '{}' (from COBOL group '{}') in DTO. " +
                                 "This may cause compilation errors.",
                                 fieldName, group.getName());
                     }
@@ -1070,7 +1070,7 @@ public class ProjectGenerator {
 
                     // Check for enum class name collisions
                     if (!generatedEnumClasses.add(enumName)) {
-                        logger.warn("Skipping duplicate enum class generation: {} for field {} in copybook {}. " +
+                    		log.warn("Skipping duplicate enum class generation: {} for field {} in copybook {}. " +
                                 "This may indicate multiple fields with the same name across copybooks.",
                                 enumName, field.getName(), model.getName());
                         continue;
@@ -1103,7 +1103,7 @@ public class ProjectGenerator {
 
                         // Check for enum constant name collisions
                         if (!usedConstantNames.add(constName)) {
-                            logger.warn("Duplicate enum constant name detected: {} in enum {} (from 88-level '{}' with value '{}'). " +
+                        		log.warn("Duplicate enum constant name detected: {} in enum {} (from 88-level '{}' with value '{}'). " +
                                     "This constant will be skipped.",
                                     constName, enumName, enum88.getName(), value);
                             continue;
@@ -3112,7 +3112,7 @@ public class ProjectGenerator {
         if (parentDir != null) {
             Files.createDirectories(parentDir);
         }
-        safeWriteString(filePath, content);
+        Files.writeString(filePath, content);
     }
 
     private String toPascalCase(String input) {
@@ -3159,7 +3159,7 @@ public class ProjectGenerator {
                 String occursDepending = field.getOccursDepending();
                 if (occursDepending != null && !occursDepending.isBlank()) {
                     if (!seenFields.contains(occursDepending.toUpperCase())) {
-                        logger.warn("Field {} in copybook {} has OCCURS DEPENDING ON {} which may not have been deserialized yet. " +
+                    		log.warn("Field {} in copybook {} has OCCURS DEPENDING ON {} which may not have been deserialized yet. " +
                                 "Ensure the depending field appears before the array in the COBOL structure.",
                                 field.getName(), copybookName, occursDepending);
                     }
@@ -3169,7 +3169,7 @@ public class ProjectGenerator {
                 String occursDepending = childGroup.getOccursDepending();
                 if (occursDepending != null && !occursDepending.isBlank()) {
                     if (!seenFields.contains(occursDepending.toUpperCase())) {
-                        logger.warn("Group {} in copybook {} has OCCURS DEPENDING ON {} which may not have been deserialized yet. " +
+                    		log.warn("Group {} in copybook {} has OCCURS DEPENDING ON {} which may not have been deserialized yet. " +
                                 "Ensure the depending field appears before the array in the COBOL structure.",
                                 childGroup.getName(), copybookName, occursDepending);
                     }
