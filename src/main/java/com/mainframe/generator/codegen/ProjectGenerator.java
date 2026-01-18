@@ -1,5 +1,6 @@
 package com.mainframe.generator.codegen;
 
+import com.mainframe.generator.codegen.config.ApplicationConfigGenerator;
 import com.mainframe.generator.codegen.dto.EnumGenerator;
 import com.mainframe.generator.codegen.dto.metadata.DtoDeduplicator;
 import com.mainframe.generator.codegen.dto.metadata.DtoInheritanceDetector;
@@ -7,6 +8,7 @@ import com.mainframe.generator.codegen.dto.metadata.DtoMetadataBuilder;
 import com.mainframe.generator.codegen.dto.metadata.DtoPackageClassifier;
 import com.mainframe.generator.codegen.dto.wrapper.WrapperDecisionMaker;
 import com.mainframe.generator.codegen.dto.wrapper.WrapperGenerator;
+import com.mainframe.generator.codegen.maven.PomGenerator;
 import com.mainframe.generator.codegen.util.FileWriteUtil;
 import com.mainframe.generator.codegen.util.NamingUtil;
 import com.mainframe.generator.mapping.MappingDocument;
@@ -117,11 +119,11 @@ public class ProjectGenerator {
             
             // Step 4: Generate pom.xml
             log.info("Step 4: Generating pom.xml...");
-            generatePom(projectDir);
-            
+            new PomGenerator(config).generate(projectDir);
+
             // Step 5: Generate application.yml
             log.info("Step 5: Generating application.yml...");
-            generateApplicationYml(projectDir);
+            new ApplicationConfigGenerator(config).generate(projectDir);
             
             // Step 6: Generate enums FIRST (DTOs reference them)
             log.info("Step 6: Generating enum classes...");
@@ -620,185 +622,10 @@ public class ProjectGenerator {
                     .forEach(File::delete);
         }
     }
-    
-    private void generatePom(Path projectDir) throws IOException {
-        String pom = generatePomContent();
-        safeWriteString(projectDir.resolve("pom.xml"), pom);
-    }
-    
-    private String generatePomContent() {
-        return String.format("""
-                <?xml version="1.0" encoding="UTF-8"?>
-                <project xmlns="http://maven.apache.org/POM/4.0.0"
-                         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-                         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-                    <modelVersion>4.0.0</modelVersion>
-                
-                    <parent>
-                        <groupId>org.springframework.boot</groupId>
-                        <artifactId>spring-boot-starter-parent</artifactId>
-                        <version>3.2.1</version>
-                        <relativePath/>
-                    </parent>
-                
-                    <groupId>%s</groupId>
-                    <artifactId>%s</artifactId>
-                    <version>1.0.0-SNAPSHOT</version>
-                    <packaging>jar</packaging>
-                
-                    <name>%s</name>
-                    <description>Generated Spring Boot + Camel mainframe integration project</description>
-                
-                    <properties>
-                        <java.version>17</java.version>
-                        <camel.version>4.3.0</camel.version>
-                    </properties>
-                
-                    <dependencyManagement>
-                        <dependencies>
-                            <dependency>
-                                <groupId>org.apache.camel.springboot</groupId>
-                                <artifactId>camel-spring-boot-bom</artifactId>
-                                <version>${camel.version}</version>
-                                <type>pom</type>
-                                <scope>import</scope>
-                            </dependency>
-                        </dependencies>
-                    </dependencyManagement>
-                
-                    <dependencies>
-                        <!-- Spring Boot -->
-                        <dependency>
-                            <groupId>org.springframework.boot</groupId>
-                            <artifactId>spring-boot-starter-web</artifactId>
-                        </dependency>
-                        <dependency>
-                            <groupId>org.springframework.boot</groupId>
-                            <artifactId>spring-boot-starter-validation</artifactId>
-                        </dependency>
-                
-                        <!-- Apache Camel -->
-                        <dependency>
-                            <groupId>org.apache.camel.springboot</groupId>
-                            <artifactId>camel-spring-boot-starter</artifactId>
-                        </dependency>
-                        <dependency>
-                            <groupId>org.apache.camel.springboot</groupId>
-                            <artifactId>camel-direct-starter</artifactId>
-                        </dependency>
-                
-                        <!-- Lombok -->
-                        <dependency>
-                            <groupId>org.projectlombok</groupId>
-                            <artifactId>lombok</artifactId>
-                            <scope>provided</scope>
-                        </dependency>
-                
-                        <!-- Jackson -->
-                        <dependency>
-                            <groupId>com.fasterxml.jackson.core</groupId>
-                            <artifactId>jackson-databind</artifactId>
-                        </dependency>
-                        <dependency>
-                            <groupId>com.fasterxml.jackson.datatype</groupId>
-                            <artifactId>jackson-datatype-jsr310</artifactId>
-                        </dependency>
-                
-                        <!-- Testing -->
-                        <dependency>
-                            <groupId>org.springframework.boot</groupId>
-                            <artifactId>spring-boot-starter-test</artifactId>
-                            <scope>test</scope>
-                        </dependency>
-                        <dependency>
-                            <groupId>org.apache.camel</groupId>
-                            <artifactId>camel-test-spring-junit5</artifactId>
-                            <scope>test</scope>
-                        </dependency>
-                    </dependencies>
-                
-                    <build>
-                        <plugins>
-                            <plugin>
-                                <groupId>org.springframework.boot</groupId>
-                                <artifactId>spring-boot-maven-plugin</artifactId>
-                                <configuration>
-                                    <excludes>
-                                        <exclude>
-                                            <groupId>org.projectlombok</groupId>
-                                            <artifactId>lombok</artifactId>
-                                        </exclude>
-                                    </excludes>
-                                </configuration>
-                            </plugin>
-                        </plugins>
-                    </build>
-                </project>
-                """, config.getBasePackage(), config.getArtifactId(), config.getProjectName());
-    }
-    
-    private void generateApplicationYml(Path projectDir) throws IOException {
-        String yml = String.format("""
-                server:
-                  port: 8080
-                
-                spring:
-                  application:
-                    name: %s
-                
-                mainframe:
-                  program-id: %s
-                  tcp:
-                    host: %s
-                    port: %d
-                    connect-timeout-ms: %d
-                    read-timeout-ms: %d
-                    framing: %s
-                    encoding: %s
-                
-                camel:
-                  springboot:
-                    name: %s
-                
-                logging:
-                  level:
-                    %s: DEBUG
-                    org.apache.camel: INFO
-                """,
-                config.getProjectName(),
-                config.getProgramId(),
-                config.getTcpHost(),
-                config.getTcpPort(),
-                config.getTcpConnectTimeout(),
-                config.getTcpReadTimeout(),
-                config.getFramingMode(),
-                config.getEncoding(),
-                config.getProjectName(),
-                config.getBasePackage()
-        );
-        
-        safeWriteString(projectDir.resolve("src/main/resources/application.yml"), yml);
-        
-        // Also create test application.yml
-        String testYml = """
-                spring:
-                  profiles:
-                    active: test
-                
-                mainframe:
-                  tcp:
-                    host: localhost
-                    port: 0
-                    framing: LENGTH_PREFIX_2
-                """;
-        safeWriteString(projectDir.resolve("src/test/resources/application.yml"), testYml);
-    }
 
     /**
      * Generate multi-copybook wrapper classes (ApiRequest/ApiResponse).
      * These wrappers contain fields for each copybook DTO in the request/response sets.
-     */
-    /**
      * FIX: Generate wrapper classes based on DTO count, not folder mode.
      */
     private void generateWrapperClasses(Path projectDir) throws IOException {
