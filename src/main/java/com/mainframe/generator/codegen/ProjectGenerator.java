@@ -39,7 +39,12 @@ public class ProjectGenerator {
 
     // Track field values during deserialization for ODO support
     private Map<String, String> deserializationFieldValues = new HashMap<>();
-    
+
+    // DTO metadata tracking for deduplication and inheritance
+    private Map<CopybookModel, DtoMetadata> dtoMetadataMap = new HashMap<>();
+    private Map<String, List<CopybookModel>> signatureToModels = new HashMap<>();
+    private Map<CopybookModel, CopybookModel> inheritanceMap = new HashMap<>(); // child -> parent
+
     public ProjectGenerator(GeneratorConfig config) {
         this.config = config;
         this.freemarkerConfig = createFreemarkerConfig();
@@ -81,7 +86,10 @@ public class ProjectGenerator {
             
             // Identify request and response copybooks
             identifyRequestResponse();
-            
+
+            // Build DTO metadata with deduplication and inheritance
+            buildDtoMetadata();
+
             // Step 2: Parse mapping document
             log.info("Step 2: Parsing mapping document...");
             if (config.getMappingDoc() != null) {
@@ -109,7 +117,11 @@ public class ProjectGenerator {
             // Step 6: Generate model classes
             log.info("Step 6: Generating model classes...");
             int dtoCount = generateModelClasses(projectDir);
-            
+
+            // Step 6.5: Generate wrapper classes (ApiRequest/ApiResponse)
+            log.info("Step 6.5: Generating wrapper classes...");
+            generateWrapperClasses(projectDir);
+
             // Step 7: Generate enums
             log.info("Step 7: Generating enum classes...");
             generateEnumClasses(projectDir);
@@ -355,7 +367,233 @@ public class ProjectGenerator {
                 .findFirst()
                 .orElse(null);
     }
-    
+
+    /**
+     * Build DTO metadata with structural deduplication and inheritance analysis.
+     * This must be called after identifyRequestResponse().
+     */
+    private void buildDtoMetadata() {
+        log.info("Building DTO metadata with deduplication and inheritance analysis...");
+
+        boolean usingFolderBasedSelection = config.getRequestCopybookDir() != null || config.getResponseCopybookDir() != null;
+
+        if (!usingFolderBasedSelection && !config.isTestMode()) {
+            // Heuristic mode: simple metadata for request/response roots only
+            if (requestCopybook != null) {
+                String className = toPascalCase(config.getProgramId()) + "Request";
+                dtoMetadataMap.put(requestCopybook, DtoMetadata.builder()
+                        .copybookModel(requestCopybook)
+                        .className(className)
+                        .originalClassName(className)
+                        .packageType("request")
+                        .isWrapper(false)
+                        .isDeduped(false)
+                        .byteLength(requestCopybook.calculateTotalByteLength())
+                        .build());
+            }
+            if (responseCopybook != null) {
+                String className = toPascalCase(config.getProgramId()) + "Response";
+                dtoMetadataMap.put(responseCopybook, DtoMetadata.builder()
+                        .copybookModel(responseCopybook)
+                        .className(className)
+                        .originalClassName(className)
+                        .packageType("response")
+                        .isWrapper(false)
+                        .isDeduped(false)
+                        .byteLength(responseCopybook.calculateTotalByteLength())
+                        .build());
+            }
+            return;
+        }
+
+        // Folder-based or test mode: full metadata analysis
+        Set<String> usedClassNames = new HashSet<>();
+
+        // Step 1: Build metadata for all models and calculate structural signatures
+        for (CopybookModel model : allModelsToGenerate) {
+            String signature = StructuralSignatureCalculator.calculateSignature(model);
+            signatureToModels.computeIfAbsent(signature, k -> new ArrayList<>()).add(model);
+
+            String packageType = determinePackageType(model);
+            String className = determineClassName(model, packageType, usedClassNames);
+            usedClassNames.add(className);
+
+            DtoMetadata metadata = DtoMetadata.builder()
+                    .copybookModel(model)
+                    .className(className)
+                    .originalClassName(toPascalCase(model.getName()))
+                    .packageType(packageType)
+                    .structuralSignature(signature)
+                    .isWrapper(false)
+                    .isDeduped(false)
+                    .byteLength(model.calculateTotalByteLength())
+                    .build();
+
+            dtoMetadataMap.put(model, metadata);
+        }
+
+        // Include test mode models
+        if (config.isTestMode()) {
+            for (CopybookModel model : copybookModels) {
+                if (dtoMetadataMap.containsKey(model)) continue;
+
+                String signature = StructuralSignatureCalculator.calculateSignature(model);
+                signatureToModels.computeIfAbsent(signature, k -> new ArrayList<>()).add(model);
+
+                String className = determineClassName(model, "layout", usedClassNames);
+                usedClassNames.add(className);
+
+                DtoMetadata metadata = DtoMetadata.builder()
+                        .copybookModel(model)
+                        .className(className)
+                        .originalClassName(toPascalCase(model.getName()))
+                        .packageType("layout")
+                        .structuralSignature(signature)
+                        .isWrapper(false)
+                        .isDeduped(false)
+                        .byteLength(model.calculateTotalByteLength())
+                        .build();
+
+                dtoMetadataMap.put(model, metadata);
+            }
+        }
+
+        // Step 2: Detect structural duplicates and mark for deduplication
+        int dedupedCount = 0;
+        for (Map.Entry<String, List<CopybookModel>> entry : signatureToModels.entrySet()) {
+            if (entry.getValue().size() > 1) {
+                List<CopybookModel> duplicates = entry.getValue();
+                // Pick the first one as the canonical DTO (prefer shared, then alphabetically first)
+                CopybookModel canonical = duplicates.stream()
+                        .min(Comparator.comparing((CopybookModel m) -> {
+                            DtoMetadata meta = dtoMetadataMap.get(m);
+                            if ("shared".equals(meta.getPackageType())) return 0;
+                            if ("request".equals(meta.getPackageType())) return 1;
+                            if ("response".equals(meta.getPackageType())) return 2;
+                            return 3; // layout
+                        }).thenComparing(CopybookModel::getName))
+                        .orElse(duplicates.get(0));
+
+                DtoMetadata canonicalMeta = dtoMetadataMap.get(canonical);
+                // Move canonical to shared package if not already
+                if (!"shared".equals(canonicalMeta.getPackageType())) {
+                    canonicalMeta.setPackageType("shared");
+                    if (!sharedModels.contains(canonical)) {
+                        sharedModels.add(canonical);
+                        requestModels.remove(canonical);
+                        responseModels.remove(canonical);
+                    }
+                }
+
+                // Mark others as deduped
+                for (CopybookModel dup : duplicates) {
+                    if (dup != canonical) {
+                        DtoMetadata dupMeta = dtoMetadataMap.get(dup);
+                        dupMeta.setDeduped(true);
+                        dupMeta.setDedupedToClassName(canonicalMeta.getClassName());
+                        dedupedCount++;
+                        log.info("DEDUPED DTO: {} and {} share signature {} -> using shared type {}",
+                                canonical.getName(), dup.getName(), entry.getKey(), canonicalMeta.getClassName());
+                    }
+                }
+            }
+        }
+
+        if (dedupedCount > 0) {
+            log.info("  Deduped {} DTOs through structural analysis", dedupedCount);
+        }
+
+        // Step 3: Detect inheritance relationships if enabled
+        if (config.isInferInheritance()) {
+            detectInheritance();
+        }
+
+        log.info("DTO metadata built successfully: {} unique DTOs, {} deduped",
+                dtoMetadataMap.size() - dedupedCount, dedupedCount);
+    }
+
+    private String determinePackageType(CopybookModel model) {
+        if (sharedModels.contains(model)) return "shared";
+        if (requestModels.contains(model)) return "request";
+        if (responseModels.contains(model)) return "response";
+        return "layout"; // test mode
+    }
+
+    private String determineClassName(CopybookModel model, String packageType, Set<String> usedNames) {
+        // Special handling for root copybooks
+        if (model == requestCopybook && "request".equals(packageType)) {
+            return toPascalCase(config.getProgramId()) + "Request";
+        }
+        if (model == responseCopybook && "response".equals(packageType)) {
+            return toPascalCase(config.getProgramId()) + "Response";
+        }
+
+        String baseName = toPascalCase(model.getName());
+        if (!usedNames.contains(baseName)) {
+            return baseName;
+        }
+
+        // Collision detected - disambiguate
+        String sourcePath = model.getSourcePath();
+        int hash = Math.abs(sourcePath.hashCode()) % 100;
+        String disambiguated = baseName + "_" + hash;
+        while (usedNames.contains(disambiguated)) {
+            hash++;
+            disambiguated = baseName + "_" + hash;
+        }
+        log.warn("COLLISION: Class name '{}' already used. Copybook '{}' will use '{}' (hash from path: {})",
+                baseName, model.getName(), disambiguated, sourcePath);
+        return disambiguated;
+    }
+
+    private void detectInheritance() {
+        log.info("Detecting inheritance relationships...");
+        int inheritanceCount = 0;
+
+        List<CopybookModel> models = new ArrayList<>(dtoMetadataMap.keySet());
+
+        for (int i = 0; i < models.size(); i++) {
+            for (int j = 0; j < models.size(); j++) {
+                if (i == j) continue;
+
+                CopybookModel subset = models.get(i);
+                CopybookModel superset = models.get(j);
+
+                DtoMetadata subsetMeta = dtoMetadataMap.get(subset);
+                DtoMetadata supersetMeta = dtoMetadataMap.get(superset);
+
+                // Skip if already deduped
+                if (subsetMeta.isDeduped() || supersetMeta.isDeduped()) continue;
+
+                // Check if subset is a structural prefix of superset
+                if (StructuralSignatureCalculator.isStructuralSubset(subset, superset)) {
+                    // Validate that offsets are compatible (subset fields don't change offsets in superset)
+                    if (isInheritanceSafe(subset, superset)) {
+                        inheritanceMap.put(superset, subset); // superset extends subset
+                        supersetMeta.setExtendsClassName(subsetMeta.getClassName());
+                        inheritanceCount++;
+                        log.info("INHERITANCE: {} extends {} (structural prefix detected)",
+                                supersetMeta.getClassName(), subsetMeta.getClassName());
+                        break; // Only one parent per DTO
+                    }
+                }
+            }
+        }
+
+        if (inheritanceCount > 0) {
+            log.info("  Detected {} inheritance relationships", inheritanceCount);
+        }
+    }
+
+    private boolean isInheritanceSafe(CopybookModel subset, CopybookModel superset) {
+        // For inheritance to be safe:
+        // 1. Serialization offsets must be compatible (subset's fields are a prefix)
+        // 2. No REDEFINES that would change semantics
+        // 3. OCCURS counts must match for prefix fields
+        // For now, we rely on isStructuralSubset which already checks these
+        return true;
+    }
+
     private Path createProjectStructure() throws IOException {
         Path projectDir = config.getOutputDir().resolve(config.getProjectName());
         
@@ -581,111 +819,286 @@ public class ProjectGenerator {
                 """;
         safeWriteString(projectDir.resolve("src/test/resources/application.yml"), testYml);
     }
-    
-    private int generateModelClasses(Path projectDir) throws IOException {
-        int count = 0;
-        Set<String> generatedClassNames = new HashSet<>();
 
+    /**
+     * Generate multi-copybook wrapper classes (ApiRequest/ApiResponse).
+     * These wrappers contain fields for each copybook DTO in the request/response sets.
+     */
+    private void generateWrapperClasses(Path projectDir) throws IOException {
         boolean usingFolderBasedSelection = config.getRequestCopybookDir() != null || config.getResponseCopybookDir() != null;
 
-        if (usingFolderBasedSelection || config.isTestMode()) {
-            // Folder-based mode or test mode: generate DTOs for all models with de-duplication
-
-            // Apply inheritance factoring if enabled
-            if (config.isInferInheritance()) {
-                applyInheritanceFactoring();
-            }
-
-            // Generate request root DTO (special name: {ProgramId}Request)
-            if (requestCopybook != null) {
-                String className = toPascalCase(config.getProgramId()) + "Request";
-                generateDtoClass(projectDir, requestCopybook, "request", "Request", className, false);
-                generatedClassNames.add(className);
-                count++;
-            }
-
-            // Generate response root DTO (special name: {ProgramId}Response)
-            if (responseCopybook != null && responseCopybook != requestCopybook) {
-                String className = toPascalCase(config.getProgramId()) + "Response";
-                generateDtoClass(projectDir, responseCopybook, "response", "Response", className, false);
-                generatedClassNames.add(className);
-                count++;
-            } else if (responseCopybook == requestCopybook && responseCopybook != null) {
-                String className = toPascalCase(config.getProgramId()) + "Response";
-                generateDtoClass(projectDir, responseCopybook, "response", "Response", className, false);
-                generatedClassNames.add(className);
-                count++;
-            }
-
-            // Generate non-root request models
-            for (CopybookModel model : requestModels) {
-                if (model == requestCopybook) continue; // Skip root, already generated
-                String className = toPascalCase(model.getName());
-                if (generatedClassNames.contains(className)) {
-                    className = disambiguateClassName(className, model, generatedClassNames);
-                }
-                generateDtoClass(projectDir, model, "request", null, className, config.isTestMode());
-                generatedClassNames.add(className);
-                count++;
-            }
-
-            // Generate non-root response models
-            for (CopybookModel model : responseModels) {
-                if (model == responseCopybook) continue; // Skip root, already generated
-                String className = toPascalCase(model.getName());
-                if (generatedClassNames.contains(className)) {
-                    className = disambiguateClassName(className, model, generatedClassNames);
-                }
-                generateDtoClass(projectDir, model, "response", null, className, config.isTestMode());
-                generatedClassNames.add(className);
-                count++;
-            }
-
-            // Generate shared models (de-duped)
-            for (CopybookModel model : sharedModels) {
-                String className = toPascalCase(model.getName());
-                if (generatedClassNames.contains(className)) {
-                    log.debug("Skipping duplicate shared model: {}", className);
-                    continue; // Already generated in request or response
-                }
-                generateDtoClass(projectDir, model, "shared", null, className, config.isTestMode());
-                generatedClassNames.add(className);
-                count++;
-            }
-
-            // Test mode: generate DTOs for all remaining parsed copybooks
-            if (config.isTestMode()) {
-                for (CopybookModel model : copybookModels) {
-                    String className = toPascalCase(model.getName());
-                    if (generatedClassNames.contains(className)) {
-                        continue; // Already generated
-                    }
-                    generateDtoClass(projectDir, model, "layout", null, className, true);
-                    generatedClassNames.add(className);
-                    count++;
-                }
-            }
-
-        } else {
-            // Heuristic mode (backward compatibility)
-            if (requestCopybook != null) {
-                String className = toPascalCase(config.getProgramId()) + "Request";
-                generateDtoClass(projectDir, requestCopybook, "request", "Request", className, false);
-                count++;
-            }
-
-            if (responseCopybook != null && responseCopybook != requestCopybook) {
-                String className = toPascalCase(config.getProgramId()) + "Response";
-                generateDtoClass(projectDir, responseCopybook, "response", "Response", className, false);
-                count++;
-            } else if (responseCopybook == requestCopybook && responseCopybook != null) {
-                String className = toPascalCase(config.getProgramId()) + "Response";
-                generateDtoClass(projectDir, responseCopybook, "response", "Response", className, false);
-                count++;
-            }
+        if (!usingFolderBasedSelection) {
+            // Heuristic mode: no wrappers needed
+            return;
         }
 
+        // Generate ApiRequest wrapper if we have multiple request copybooks
+        List<DtoMetadata> requestDtos = getRequestDtosForWrapper();
+        if (requestDtos.size() > 1) {
+            generateApiRequestWrapper(projectDir, requestDtos);
+        }
+
+        // Generate ApiResponse wrapper if we have multiple response copybooks
+        List<DtoMetadata> responseDtos = getResponseDtosForWrapper();
+        if (responseDtos.size() > 1) {
+            generateApiResponseWrapper(projectDir, responseDtos);
+        }
+    }
+
+    private List<DtoMetadata> getRequestDtosForWrapper() {
+        List<DtoMetadata> dtos = new ArrayList<>();
+        for (CopybookModel model : requestModels) {
+            DtoMetadata meta = dtoMetadataMap.get(model);
+            if (meta != null && !meta.isDeduped()) {
+                dtos.add(meta);
+            }
+        }
+        // Include shared models that are used in requests
+        for (CopybookModel model : sharedModels) {
+            if (requestModels.contains(model)) {
+                DtoMetadata meta = dtoMetadataMap.get(model);
+                if (meta != null && !meta.isDeduped()) {
+                    dtos.add(meta);
+                }
+            }
+        }
+        // Sort by name for deterministic ordering
+        dtos.sort(Comparator.comparing(DtoMetadata::getClassName));
+        return dtos;
+    }
+
+    private List<DtoMetadata> getResponseDtosForWrapper() {
+        List<DtoMetadata> dtos = new ArrayList<>();
+        for (CopybookModel model : responseModels) {
+            DtoMetadata meta = dtoMetadataMap.get(model);
+            if (meta != null && !meta.isDeduped()) {
+                dtos.add(meta);
+            }
+        }
+        // Include shared models that are used in responses
+        for (CopybookModel model : sharedModels) {
+            if (responseModels.contains(model)) {
+                DtoMetadata meta = dtoMetadataMap.get(model);
+                if (meta != null && !meta.isDeduped()) {
+                    dtos.add(meta);
+                }
+            }
+        }
+        // Sort by name for deterministic ordering (response root first if present)
+        dtos.sort((a, b) -> {
+            DtoMetadata responseMeta = dtoMetadataMap.get(responseCopybook);
+            if (responseMeta != null) {
+                if (a.equals(responseMeta)) return -1;
+                if (b.equals(responseMeta)) return 1;
+            }
+            return a.getClassName().compareTo(b.getClassName());
+        });
+        return dtos;
+    }
+
+    private void generateApiRequestWrapper(Path projectDir, List<DtoMetadata> requestDtos) throws IOException {
+        String basePackagePath = config.getBasePackage().replace('.', '/');
+        String className = toPascalCase(config.getProgramId()) + "ApiRequest";
+
+        Path outputPath = projectDir.resolve("src/main/java/" + basePackagePath + "/model/request/" + className + ".java");
+
+        StringBuilder importsBuilder = new StringBuilder();
+        StringBuilder fieldsBuilder = new StringBuilder();
+
+        Set<String> imports = new HashSet<>();
+        for (DtoMetadata dto : requestDtos) {
+            if (dto.isDeduped()) continue; // Skip deduped DTOs
+            String fieldName = toCamelCase(dto.getClassName());
+            String fullType = config.getBasePackage() + ".model." + dto.getPackageType() + "." + dto.getClassName();
+            imports.add(fullType);
+
+            fieldsBuilder.append(String.format("    private %s %s;\n", dto.getClassName(), fieldName));
+        }
+
+        for (String imp : imports.stream().sorted().toList()) {
+            importsBuilder.append(String.format("import %s;\n", imp));
+        }
+
+        String content = String.format("""
+                package %s.model.request;
+
+                %s
+                import lombok.AllArgsConstructor;
+                import lombok.Builder;
+                import lombok.Data;
+                import lombok.NoArgsConstructor;
+
+                /**
+                 * Multi-copybook request wrapper containing all request container DTOs.
+                 * Generated in folder-based mode.
+                 */
+                @Data
+                @NoArgsConstructor
+                @AllArgsConstructor
+                @Builder
+                public class %s {
+                %s
+                }
+                """, config.getBasePackage(), importsBuilder.toString(), className, fieldsBuilder.toString());
+
+        safeWriteString(outputPath, content);
+        log.info("  Generated wrapper: {}", outputPath);
+    }
+
+    private void generateApiResponseWrapper(Path projectDir, List<DtoMetadata> responseDtos) throws IOException {
+        String basePackagePath = config.getBasePackage().replace('.', '/');
+        String className = toPascalCase(config.getProgramId()) + "ApiResponse";
+
+        Path outputPath = projectDir.resolve("src/main/java/" + basePackagePath + "/model/response/" + className + ".java");
+
+        StringBuilder importsBuilder = new StringBuilder();
+        StringBuilder fieldsBuilder = new StringBuilder();
+
+        Set<String> imports = new HashSet<>();
+        for (DtoMetadata dto : responseDtos) {
+            if (dto.isDeduped()) continue; // Skip deduped DTOs
+            String fieldName = toCamelCase(dto.getClassName());
+            String fullType = config.getBasePackage() + ".model." + dto.getPackageType() + "." + dto.getClassName();
+            imports.add(fullType);
+
+            fieldsBuilder.append(String.format("    private %s %s;\n", dto.getClassName(), fieldName));
+        }
+
+        for (String imp : imports.stream().sorted().toList()) {
+            importsBuilder.append(String.format("import %s;\n", imp));
+        }
+
+        String content = String.format("""
+                package %s.model.response;
+
+                %s
+                import lombok.AllArgsConstructor;
+                import lombok.Builder;
+                import lombok.Data;
+                import lombok.NoArgsConstructor;
+
+                /**
+                 * Multi-copybook response wrapper containing all response container DTOs.
+                 * Generated in folder-based mode.
+                 */
+                @Data
+                @NoArgsConstructor
+                @AllArgsConstructor
+                @Builder
+                public class %s {
+                %s
+                }
+                """, config.getBasePackage(), importsBuilder.toString(), className, fieldsBuilder.toString());
+
+        safeWriteString(outputPath, content);
+        log.info("  Generated wrapper: {}", outputPath);
+    }
+
+    private int generateModelClasses(Path projectDir) throws IOException {
+        int count = 0;
+
+        // Generate DTOs using metadata (which handles deduplication, collision, and inheritance)
+        for (Map.Entry<CopybookModel, DtoMetadata> entry : dtoMetadataMap.entrySet()) {
+            CopybookModel model = entry.getKey();
+            DtoMetadata metadata = entry.getValue();
+
+            // Skip deduped DTOs - they'll use the canonical shared DTO instead
+            if (metadata.isDeduped()) {
+                log.debug("Skipping deduped DTO: {} (using shared {})",
+                    metadata.getOriginalClassName(), metadata.getDedupedToClassName());
+                continue;
+            }
+
+            // Determine suffix for special cases (Request/Response roots)
+            String suffix = null;
+            if (model == requestCopybook && "request".equals(metadata.getPackageType())) {
+                suffix = "Request";
+            } else if (model == responseCopybook && "response".equals(metadata.getPackageType())) {
+                suffix = "Response";
+            }
+
+            // Generate DTO with inheritance support
+            generateDtoClassWithMetadata(projectDir, model, metadata, suffix);
+            count++;
+        }
+
+        log.info("  Generated {} DTO classes", count);
         return count;
+    }
+
+    /**
+     * Generate DTO class using metadata (supports inheritance).
+     */
+    private void generateDtoClassWithMetadata(Path projectDir, CopybookModel model,
+                                              DtoMetadata metadata, String suffix) throws IOException {
+        String basePackagePath = config.getBasePackage().replace('.', '/');
+        String className = metadata.getClassName();
+        String packageType = metadata.getPackageType();
+
+        Path outputPath = projectDir.resolve(
+            "src/main/java/" + basePackagePath + "/model/" + packageType + "/" + className + ".java"
+        );
+
+        // Generate nested classes first (for OCCURS)
+        generateNestedClasses(projectDir, model.getRootGroup(), packageType);
+
+        // Build class content with optional inheritance
+        StringBuilder content = new StringBuilder();
+        content.append(String.format("package %s.model.%s;\n\n", config.getBasePackage(), packageType));
+
+        // Imports
+        content.append("import lombok.AllArgsConstructor;\n");
+        content.append("import lombok.Builder;\n");
+        content.append("import lombok.Data;\n");
+        content.append("import lombok.NoArgsConstructor;\n");
+        if (metadata.getExtendsClassName() != null) {
+            content.append("import lombok.EqualsAndHashCode;\n");
+            content.append("import lombok.ToString;\n");
+        }
+        content.append("import com.fasterxml.jackson.annotation.JsonProperty;\n");
+        content.append("import jakarta.validation.constraints.*;\n");
+        content.append("import java.math.BigDecimal;\n");
+        content.append("import java.util.List;\n\n");
+
+        // Javadoc
+        content.append("/**\n");
+        content.append(String.format(" * DTO for copybook: %s\n", model.getName()));
+        if (metadata.getExtendsClassName() != null) {
+            content.append(String.format(" * Extends: %s (structural prefix detected)\n", metadata.getExtendsClassName()));
+        }
+        if (metadata.isDeduped()) {
+            content.append(" * Note: Deduped - this DTO shares structure with another copybook\n");
+        }
+        content.append(String.format(" * Byte length: %d\n", metadata.getByteLength()));
+        content.append(" */\n");
+
+        // Annotations
+        content.append("@Data\n");
+        content.append("@NoArgsConstructor\n");
+        content.append("@AllArgsConstructor\n");
+        content.append("@Builder\n");
+        if (metadata.getExtendsClassName() != null) {
+            content.append("@EqualsAndHashCode(callSuper = true)\n");
+            content.append("@ToString(callSuper = true)\n");
+        }
+
+        // Class declaration with optional extends
+        if (metadata.getExtendsClassName() != null) {
+            content.append(String.format("public class %s extends %s {\n", className, metadata.getExtendsClassName()));
+        } else {
+            content.append(String.format("public class %s {\n", className));
+        }
+
+        // Generate fields
+        if (model.getRootGroup() != null) {
+            Set<String> nestedClassNames = new HashSet<>();
+            generateDtoFields(content, model.getRootGroup().getChildren(), "    ", nestedClassNames);
+        }
+
+        content.append("}\n");
+
+        safeWriteString(outputPath, content.toString());
+        log.info("  FILE WRITTEN: {}", outputPath);
     }
 
     private String disambiguateClassName(String baseName, CopybookModel model, Set<String> existingNames) {
@@ -1457,6 +1870,284 @@ public class ProjectGenerator {
                 generateConcreteSerializer(projectDir, responseCopybook, "Response");
             }
         }
+
+        // Generate wrapper serializers for multi-copybook mode
+        if (usingFolderBasedSelection) {
+            generateWrapperSerializers(projectDir);
+        }
+    }
+
+    /**
+     * Generate wrapper-level serializers for ApiRequest/ApiResponse.
+     * These serializers concatenate/split bytes from individual copybook serializers.
+     */
+    private void generateWrapperSerializers(Path projectDir) throws IOException {
+        List<DtoMetadata> requestDtos = getRequestDtosForWrapper();
+        List<DtoMetadata> responseDtos = getResponseDtosForWrapper();
+
+        if (requestDtos.size() > 1) {
+            generateApiRequestSerializer(projectDir, requestDtos);
+        }
+
+        if (responseDtos.size() > 1) {
+            generateApiResponseSerializer(projectDir, responseDtos);
+        }
+    }
+
+    private void generateApiRequestSerializer(Path projectDir, List<DtoMetadata> requestDtos) throws IOException {
+        String basePackagePath = config.getBasePackage().replace('.', '/');
+        String className = toPascalCase(config.getProgramId()) + "ApiRequestSerializer";
+        String dtoClassName = toPascalCase(config.getProgramId()) + "ApiRequest";
+
+        Path outputPath = projectDir.resolve(
+            "src/main/java/" + basePackagePath + "/util/request/" + className + ".java"
+        );
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format("package %s.util.request;\n\n", config.getBasePackage()));
+
+        // Imports
+        sb.append(String.format("import %s.model.request.%s;\n", config.getBasePackage(), dtoClassName));
+        sb.append(String.format("import %s.util.CobolSerializer;\n", config.getBasePackage()));
+        for (DtoMetadata dto : requestDtos) {
+            if (dto.isDeduped()) continue;
+            sb.append(String.format("import %s.model.%s.%s;\n",
+                config.getBasePackage(), dto.getPackageType(), dto.getClassName()));
+            sb.append(String.format("import %s.util.%s.%sSerializer;\n",
+                config.getBasePackage(), dto.getPackageType(), dto.getClassName()));
+        }
+        sb.append("import org.springframework.stereotype.Component;\n");
+        sb.append("import java.util.Arrays;\n\n");
+
+        // Class declaration
+        sb.append("/**\n");
+        sb.append(" * Multi-copybook request serializer.\n");
+        sb.append(" * Concatenates bytes from individual copybook serializers in deterministic order.\n");
+        sb.append(" */\n");
+        sb.append("@Component\n");
+        sb.append(String.format("public class %s implements CobolSerializer<%s> {\n\n", className, dtoClassName));
+
+        // Serializer fields
+        for (DtoMetadata dto : requestDtos) {
+            if (dto.isDeduped()) continue;
+            String fieldName = toCamelCase(dto.getClassName()) + "Serializer";
+            sb.append(String.format("    private final %sSerializer %s = new %sSerializer();\n",
+                dto.getClassName(), fieldName, dto.getClassName()));
+        }
+        sb.append("\n");
+
+        // Calculate total byte length
+        sb.append("    private static final int BYTE_LENGTH = ");
+        sb.append(requestDtos.stream()
+            .filter(dto -> !dto.isDeduped())
+            .map(dto -> String.valueOf(dto.getByteLength()))
+            .collect(java.util.stream.Collectors.joining(" + ")));
+        sb.append(";\n\n");
+
+        // getByteLength method
+        sb.append("    @Override\n");
+        sb.append("    public int getByteLength() {\n");
+        sb.append("        return BYTE_LENGTH;\n");
+        sb.append("    }\n\n");
+
+        // serialize method - concatenate all container bytes
+        sb.append("    @Override\n");
+        sb.append(String.format("    public byte[] serialize(%s request) {\n", dtoClassName));
+        sb.append("        byte[] result = new byte[BYTE_LENGTH];\n");
+        sb.append("        int offset = 0;\n\n");
+
+        for (DtoMetadata dto : requestDtos) {
+            if (dto.isDeduped()) continue;
+            String fieldName = toCamelCase(dto.getClassName());
+            String serializerField = fieldName + "Serializer";
+
+            sb.append(String.format("        // Serialize %s\n", dto.getClassName()));
+            sb.append(String.format("        if (request.get%s() != null) {\n",
+                capitalize(fieldName)));
+            sb.append(String.format("            byte[] %sBytes = %s.serialize(request.get%s());\n",
+                fieldName, serializerField, capitalize(fieldName)));
+            sb.append(String.format("            System.arraycopy(%sBytes, 0, result, offset, %sBytes.length);\n",
+                fieldName, fieldName));
+            sb.append(String.format("            offset += %sBytes.length;\n", fieldName));
+            sb.append("        } else {\n");
+            sb.append(String.format("            // Null container - fill with spaces\n"));
+            sb.append(String.format("            Arrays.fill(result, offset, offset + %s, (byte) 0x40);\n",
+                dto.getByteLength()));
+            sb.append(String.format("            offset += %s;\n", dto.getByteLength()));
+            sb.append("        }\n\n");
+        }
+
+        sb.append("        return result;\n");
+        sb.append("    }\n\n");
+
+        // deserialize method - split by known lengths
+        sb.append("    @Override\n");
+        sb.append(String.format("    public %s deserialize(byte[] bytes) {\n", dtoClassName));
+        sb.append(String.format("        %s.%sBuilder builder = %s.builder();\n",
+            dtoClassName, dtoClassName, dtoClassName));
+        sb.append("        int offset = 0;\n\n");
+
+        for (DtoMetadata dto : requestDtos) {
+            if (dto.isDeduped()) continue;
+            String fieldName = toCamelCase(dto.getClassName());
+            String serializerField = fieldName + "Serializer";
+
+            sb.append(String.format("        // Deserialize %s\n", dto.getClassName()));
+            sb.append(String.format("        if (offset + %s <= bytes.length) {\n", dto.getByteLength()));
+            sb.append(String.format("            byte[] %sBytes = Arrays.copyOfRange(bytes, offset, offset + %s);\n",
+                fieldName, dto.getByteLength()));
+            sb.append(String.format("            builder.%s(%s.deserialize(%sBytes));\n",
+                fieldName, serializerField, fieldName));
+            sb.append(String.format("            offset += %s;\n", dto.getByteLength()));
+            sb.append("        }\n\n");
+        }
+
+        sb.append("        return builder.build();\n");
+        sb.append("    }\n");
+        sb.append("}\n");
+
+        safeWriteString(outputPath, sb.toString());
+        log.info("  Generated wrapper serializer: {}", outputPath);
+    }
+
+    private void generateApiResponseSerializer(Path projectDir, List<DtoMetadata> responseDtos) throws IOException {
+        String basePackagePath = config.getBasePackage().replace('.', '/');
+        String className = toPascalCase(config.getProgramId()) + "ApiResponseSerializer";
+        String dtoClassName = toPascalCase(config.getProgramId()) + "ApiResponse";
+
+        Path outputPath = projectDir.resolve(
+            "src/main/java/" + basePackagePath + "/util/response/" + className + ".java"
+        );
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format("package %s.util.response;\n\n", config.getBasePackage()));
+
+        // Imports
+        sb.append(String.format("import %s.model.response.%s;\n", config.getBasePackage(), dtoClassName));
+        sb.append(String.format("import %s.util.CobolSerializer;\n", config.getBasePackage()));
+        for (DtoMetadata dto : responseDtos) {
+            if (dto.isDeduped()) continue;
+            sb.append(String.format("import %s.model.%s.%s;\n",
+                config.getBasePackage(), dto.getPackageType(), dto.getClassName()));
+            sb.append(String.format("import %s.util.%s.%sSerializer;\n",
+                config.getBasePackage(), dto.getPackageType(), dto.getClassName()));
+        }
+        sb.append("import org.slf4j.Logger;\n");
+        sb.append("import org.slf4j.LoggerFactory;\n");
+        sb.append("import org.springframework.stereotype.Component;\n");
+        sb.append("import java.util.Arrays;\n\n");
+
+        // Class declaration
+        sb.append("/**\n");
+        sb.append(" * Multi-copybook response serializer.\n");
+        sb.append(" * Splits response bytes by known lengths and deserializes each container.\n");
+        sb.append(" */\n");
+        sb.append("@Component\n");
+        sb.append(String.format("public class %s implements CobolSerializer<%s> {\n\n", className, dtoClassName));
+
+        sb.append("    private static final Logger log = LoggerFactory.getLogger(" + className + ".class);\n\n");
+
+        // Serializer fields
+        for (DtoMetadata dto : responseDtos) {
+            if (dto.isDeduped()) continue;
+            String fieldName = toCamelCase(dto.getClassName()) + "Serializer";
+            sb.append(String.format("    private final %sSerializer %s = new %sSerializer();\n",
+                dto.getClassName(), fieldName, dto.getClassName()));
+        }
+        sb.append("\n");
+
+        // Calculate total byte length
+        sb.append("    private static final int BYTE_LENGTH = ");
+        sb.append(responseDtos.stream()
+            .filter(dto -> !dto.isDeduped())
+            .map(dto -> String.valueOf(dto.getByteLength()))
+            .collect(java.util.stream.Collectors.joining(" + ")));
+        sb.append(";\n\n");
+
+        // getByteLength method
+        sb.append("    @Override\n");
+        sb.append("    public int getByteLength() {\n");
+        sb.append("        return BYTE_LENGTH;\n");
+        sb.append("    }\n\n");
+
+        // serialize method - concatenate all container bytes
+        sb.append("    @Override\n");
+        sb.append(String.format("    public byte[] serialize(%s response) {\n", dtoClassName));
+        sb.append("        byte[] result = new byte[BYTE_LENGTH];\n");
+        sb.append("        int offset = 0;\n\n");
+
+        for (DtoMetadata dto : responseDtos) {
+            if (dto.isDeduped()) continue;
+            String fieldName = toCamelCase(dto.getClassName());
+            String serializerField = fieldName + "Serializer";
+
+            sb.append(String.format("        // Serialize %s\n", dto.getClassName()));
+            sb.append(String.format("        if (response.get%s() != null) {\n",
+                capitalize(fieldName)));
+            sb.append(String.format("            byte[] %sBytes = %s.serialize(response.get%s());\n",
+                fieldName, serializerField, capitalize(fieldName)));
+            sb.append(String.format("            System.arraycopy(%sBytes, 0, result, offset, %sBytes.length);\n",
+                fieldName, fieldName));
+            sb.append(String.format("            offset += %sBytes.length;\n", fieldName));
+            sb.append("        } else {\n");
+            sb.append(String.format("            // Null container - fill with spaces\n"));
+            sb.append(String.format("            Arrays.fill(result, offset, offset + %s, (byte) 0x40);\n",
+                dto.getByteLength()));
+            sb.append(String.format("            offset += %s;\n", dto.getByteLength()));
+            sb.append("        }\n\n");
+        }
+
+        sb.append("        return result;\n");
+        sb.append("    }\n\n");
+
+        // deserialize method - split by known lengths
+        sb.append("    @Override\n");
+        sb.append(String.format("    public %s deserialize(byte[] bytes) {\n", dtoClassName));
+        sb.append(String.format("        %s.%sBuilder builder = %s.builder();\n",
+            dtoClassName, dtoClassName, dtoClassName));
+        sb.append("        int offset = 0;\n\n");
+
+        sb.append("        // Handle short response payloads\n");
+        sb.append("        if (bytes.length < BYTE_LENGTH) {\n");
+        sb.append("            log.warn(\"Response payload shorter than expected: {} < {}. \" +\n");
+        sb.append("                     \"Deserializing available containers.\", bytes.length, BYTE_LENGTH);\n");
+        sb.append("        }\n\n");
+
+        sb.append("        // Handle long response payloads\n");
+        sb.append("        if (bytes.length > BYTE_LENGTH) {\n");
+        sb.append("            log.warn(\"Response payload longer than expected: {} > {}. \" +\n");
+        sb.append("                     \"Ignoring trailing bytes.\", bytes.length, BYTE_LENGTH);\n");
+        sb.append("        }\n\n");
+
+        for (DtoMetadata dto : responseDtos) {
+            if (dto.isDeduped()) continue;
+            String fieldName = toCamelCase(dto.getClassName());
+            String serializerField = fieldName + "Serializer";
+
+            sb.append(String.format("        // Deserialize %s\n", dto.getClassName()));
+            sb.append(String.format("        if (offset + %s <= bytes.length) {\n", dto.getByteLength()));
+            sb.append(String.format("            byte[] %sBytes = Arrays.copyOfRange(bytes, offset, offset + %s);\n",
+                fieldName, dto.getByteLength()));
+            sb.append(String.format("            builder.%s(%s.deserialize(%sBytes));\n",
+                fieldName, serializerField, fieldName));
+            sb.append(String.format("            offset += %s;\n", dto.getByteLength()));
+            sb.append("        } else {\n");
+            sb.append(String.format("            log.warn(\"Not enough bytes to deserialize %s, leaving null\");\n",
+                dto.getClassName()));
+            sb.append("        }\n\n");
+        }
+
+        sb.append("        return builder.build();\n");
+        sb.append("    }\n");
+        sb.append("}\n");
+
+        safeWriteString(outputPath, sb.toString());
+        log.info("  Generated wrapper serializer: {}", outputPath);
+    }
+
+    private String capitalize(String str) {
+        if (str == null || str.isEmpty()) return str;
+        return str.substring(0, 1).toUpperCase() + str.substring(1);
     }
     
     private void generateConcreteSerializer(Path projectDir, CopybookModel copybook, String suffix)
@@ -2037,43 +2728,73 @@ public class ProjectGenerator {
         Path routeFile = projectDir.resolve(
                 "src/main/java/" + basePackagePath + "/camel/MainframeRoute.java"
         );
-        
+
         String dtoClassName = toPascalCase(config.getProgramId());
-        
+        boolean usingFolderBasedSelection = config.getRequestCopybookDir() != null || config.getResponseCopybookDir() != null;
+
+        // Determine if we're using wrapper classes (multi-copybook mode)
+        List<DtoMetadata> requestDtos = getRequestDtosForWrapper();
+        List<DtoMetadata> responseDtos = getResponseDtosForWrapper();
+        boolean useWrapper = usingFolderBasedSelection && (requestDtos.size() > 1 || responseDtos.size() > 1);
+
+        String requestClassName;
+        String responseClassName;
+        String requestSerializerClass;
+        String responseSerializerClass;
+        String requestSerializerImport;
+        String responseSerializerImport;
+
+        if (useWrapper) {
+            requestClassName = dtoClassName + "ApiRequest";
+            responseClassName = dtoClassName + "ApiResponse";
+            requestSerializerClass = dtoClassName + "ApiRequestSerializer";
+            responseSerializerClass = dtoClassName + "ApiResponseSerializer";
+            requestSerializerImport = config.getBasePackage() + ".util.request." + requestSerializerClass;
+            responseSerializerImport = config.getBasePackage() + ".util.response." + responseSerializerClass;
+        } else {
+            requestClassName = dtoClassName + "Request";
+            responseClassName = dtoClassName + "Response";
+            requestSerializerClass = dtoClassName + "RequestSerializer";
+            responseSerializerClass = dtoClassName + "ResponseSerializer";
+            requestSerializerImport = config.getBasePackage() + ".util." + requestSerializerClass;
+            responseSerializerImport = config.getBasePackage() + ".util." + responseSerializerClass;
+        }
+
         String routeContent = String.format("""
                 package %s.camel;
-                
-                import %s.model.request.%sRequest;
-                import %s.model.response.%sResponse;
+
+                import %s.model.request.%s;
+                import %s.model.response.%s;
                 import %s.mainframe.transport.MainframeTransport;
-                import %s.util.%sRequestSerializer;
-                import %s.util.%sResponseSerializer;
+                import %s;
+                import %s;
                 import org.apache.camel.builder.RouteBuilder;
                 import org.springframework.beans.factory.annotation.Autowired;
                 import org.springframework.stereotype.Component;
-                
+
                 /**
                  * Camel route for mainframe communication.
+                 %s
                  */
                 @Component
                 public class MainframeRoute extends RouteBuilder {
-                    
+
                     @Autowired
                     private MainframeTransport transport;
-                    
+
                     @Autowired
-                    private %sRequestSerializer requestSerializer;
-                    
+                    private %s requestSerializer;
+
                     @Autowired
-                    private %sResponseSerializer responseSerializer;
-                    
+                    private %s responseSerializer;
+
                     @Override
                     public void configure() {
                         from("direct:mainframeCall")
                             .routeId("mainframe-call-route")
                             .log("Processing mainframe request")
                             .process(exchange -> {
-                                %sRequest request = exchange.getIn().getBody(%sRequest.class);
+                                %s request = exchange.getIn().getBody(%s.class);
                                 byte[] requestBytes = requestSerializer.serialize(request);
                                 exchange.getIn().setBody(requestBytes);
                                 log.debug("Serialized request: {} bytes", requestBytes.length);
@@ -2086,7 +2807,7 @@ public class ProjectGenerator {
                             })
                             .process(exchange -> {
                                 byte[] responseBytes = exchange.getIn().getBody(byte[].class);
-                                %sResponse response = responseSerializer.deserialize(responseBytes);
+                                %s response = responseSerializer.deserialize(responseBytes);
                                 exchange.getIn().setBody(response);
                             })
                             .log("Mainframe call completed");
@@ -2094,16 +2815,18 @@ public class ProjectGenerator {
                 }
                 """,
                 config.getBasePackage(),
-                config.getBasePackage(), dtoClassName,
-                config.getBasePackage(), dtoClassName,
+                config.getBasePackage(), requestClassName,
+                config.getBasePackage(), responseClassName,
                 config.getBasePackage(),
-                config.getBasePackage(), dtoClassName,
-                config.getBasePackage(), dtoClassName,
-                dtoClassName, dtoClassName,
-                dtoClassName, dtoClassName,
-                dtoClassName
+                requestSerializerImport,
+                responseSerializerImport,
+                useWrapper ? " * Multi-copybook mode: using wrapper serializers.\n" : "",
+                requestSerializerClass,
+                responseSerializerClass,
+                requestClassName, requestClassName,
+                responseClassName
         );
-        
+
         safeWriteString(routeFile, routeContent);
     }
     
@@ -2112,50 +2835,69 @@ public class ProjectGenerator {
         Path controllerFile = projectDir.resolve(
                 "src/main/java/" + basePackagePath + "/controller/MainframeController.java"
         );
-        
+
         String dtoClassName = toPascalCase(config.getProgramId());
-        
+        boolean usingFolderBasedSelection = config.getRequestCopybookDir() != null || config.getResponseCopybookDir() != null;
+
+        // Determine if we're using wrapper classes (multi-copybook mode)
+        List<DtoMetadata> requestDtos = getRequestDtosForWrapper();
+        List<DtoMetadata> responseDtos = getResponseDtosForWrapper();
+        boolean useWrapper = usingFolderBasedSelection && (requestDtos.size() > 1 || responseDtos.size() > 1);
+
+        String requestClassName;
+        String responseClassName;
+
+        if (useWrapper) {
+            requestClassName = dtoClassName + "ApiRequest";
+            responseClassName = dtoClassName + "ApiResponse";
+        } else {
+            requestClassName = dtoClassName + "Request";
+            responseClassName = dtoClassName + "Response";
+        }
+
         String controllerContent = String.format("""
                 package %s.controller;
-                
-                import %s.model.request.%sRequest;
-                import %s.model.response.%sResponse;
+
+                import %s.model.request.%s;
+                import %s.model.response.%s;
                 import jakarta.validation.Valid;
                 import org.apache.camel.ProducerTemplate;
                 import org.springframework.beans.factory.annotation.Autowired;
                 import org.springframework.http.ResponseEntity;
                 import org.springframework.web.bind.annotation.*;
-                
+
                 /**
                  * REST controller for mainframe operations.
+                 %s
                  */
                 @RestController
                 @RequestMapping("/api/%s")
                 public class MainframeController {
-                    
+
                     @Autowired
                     private ProducerTemplate producerTemplate;
-                    
+
                     @PostMapping("/execute")
-                    public ResponseEntity<%sResponse> execute(@Valid @RequestBody %sRequest request) {
-                        %sResponse response = producerTemplate.requestBody(
-                            "direct:mainframeCall", 
-                            request, 
-                            %sResponse.class
+                    public ResponseEntity<%s> execute(@Valid @RequestBody %s request) {
+                        %s response = producerTemplate.requestBody(
+                            "direct:mainframeCall",
+                            request,
+                            %s.class
                         );
                         return ResponseEntity.ok(response);
                     }
                 }
                 """,
                 config.getBasePackage(),
-                config.getBasePackage(), dtoClassName,
-                config.getBasePackage(), dtoClassName,
+                config.getBasePackage(), requestClassName,
+                config.getBasePackage(), responseClassName,
+                useWrapper ? " * Multi-copybook mode: using wrapper request/response classes.\n" : "",
                 config.getProgramIdPath(),
-                dtoClassName, dtoClassName,
-                dtoClassName,
-                dtoClassName
+                responseClassName, requestClassName,
+                responseClassName,
+                responseClassName
         );
-        
+
         safeWriteString(controllerFile, controllerContent);
         
         // Generate exception handler
