@@ -1,19 +1,24 @@
 package com.mainframe.generator.cli.model;
 
 import java.nio.file.Path;
-import java.util.List;
 
 import lombok.AllArgsConstructor;
 import lombok.Data;
 
 /**
- * Derived values needed by the executor. Keeps GenerateCommand thin.
+ * Validated and derived values from GenerateOptions.
+ * Keeps GenerateCommand thin and focused on orchestration.
  */
 @Data
 @AllArgsConstructor
 public class ValidatedGenerateOptions {
-    boolean usingFolderBasedSelection;
-    Path normalizedOutputDir;
-    Path projectPath;
-    List<Path> externalCopybookDirs;
+    /**
+     * Normalized output directory path.
+     */
+    private Path normalizedOutputDir;
+
+    /**
+     * Full path to the generated project.
+     */
+    private Path projectPath;
 }

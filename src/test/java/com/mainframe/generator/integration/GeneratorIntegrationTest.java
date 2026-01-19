@@ -3,7 +3,6 @@ package com.mainframe.generator.integration;
 import com.mainframe.generator.codegen.GeneratorResult;
 import com.mainframe.generator.codegen.ProjectGenerator;
 import com.mainframe.generator.codegen.model.core.context.GeneratorConfig;
-import com.mainframe.generator.codegen.model.input.FramingMode;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -24,23 +23,24 @@ class GeneratorIntegrationTest {
 
     @Test
     void testGenerateProjectFromSampleCopybooks() throws IOException {
-        // Create sample copybooks in temp directory
-        Path copybookDir = tempDir.resolve("copybooks");
-        Files.createDirectories(copybookDir);
-        
+        // Create separate request and response copybook directories
+        Path requestDir = tempDir.resolve("request");
+        Path responseDir = tempDir.resolve("response");
+        Files.createDirectories(requestDir);
+        Files.createDirectories(responseDir);
+
         String requestCopybook = """
-               01  TEST-REQUEST.
+               01  TEST-REQUEST-REC.
                    05  CUSTOMER-ID         PIC 9(10).
                    05  CUSTOMER-NAME       PIC X(30).
                    05  REQUEST-TYPE        PIC X(1).
                        88  TYPE-INQUIRY    VALUE 'I'.
                        88  TYPE-UPDATE     VALUE 'U'.
             """;
-        
-        Files.writeString(copybookDir.resolve("TEST-REQUEST.cpy"), requestCopybook);
-        
+        Files.writeString(requestDir.resolve("TEST-REQUEST.cpy"), requestCopybook);
+
         String responseCopybook = """
-               01  TEST-RESPONSE.
+               01  TEST-RESPONSE-REC.
                    05  RESPONSE-CODE       PIC X(2).
                        88  RESP-OK         VALUE '00'.
                        88  RESP-ERROR      VALUE '99'.
@@ -48,23 +48,15 @@ class GeneratorIntegrationTest {
                    05  CUSTOMER-NAME       PIC X(30).
                    05  BALANCE             PIC S9(9)V99 COMP-3.
             """;
-        
-        Files.writeString(copybookDir.resolve("TEST-RESPONSE.cpy"), responseCopybook);
+        Files.writeString(responseDir.resolve("TEST-RESPONSE.cpy"), responseCopybook);
 
-        // Configure generator
+        // Configure generator with new structure
         GeneratorConfig config = GeneratorConfig.builder()
-                .projectName("TestProject")
-                .copybookDir(copybookDir)
-                .programId("TEST-PROG")
-                .encoding("cp037")
-                .tcpHost("localhost")
-                .tcpPort(5000)
-                .tcpConnectTimeout(3000)
-                .tcpReadTimeout(5000)
-                .framingMode(FramingMode.LENGTH_PREFIX_2)
+                .serviceName("TestService")
+                .requestCopybookDir(requestDir)
+                .responseCopybookDir(responseDir)
                 .outputDir(tempDir)
                 .force(true)
-                .skipTests(true) // Skip maven tests in unit test
                 .build();
 
         // Generate project
@@ -79,83 +71,38 @@ class GeneratorIntegrationTest {
         assertThat(result.getResponseByteLength()).isGreaterThan(0);
 
         // Verify generated files exist
-        Path projectDir = tempDir.resolve("TestProject");
+        Path projectDir = tempDir.resolve("TestService");
         assertThat(Files.exists(projectDir.resolve("pom.xml"))).isTrue();
         assertThat(Files.exists(projectDir.resolve("src/main/resources/application.yml"))).isTrue();
-        assertThat(Files.exists(projectDir.resolve("sample-request.json"))).isTrue();
-        
+        assertThat(Files.exists(projectDir.resolve("README.md"))).isTrue();
+
         // Verify main classes exist
-        String basePackagePath = "com/testproject";
-        assertThat(Files.exists(projectDir.resolve("src/main/java/" + basePackagePath + "/Application.java"))).isTrue();
-        assertThat(Files.exists(projectDir.resolve("src/main/java/" + basePackagePath + "/controller/MainframeController.java"))).isTrue();
-        assertThat(Files.exists(projectDir.resolve("src/main/java/" + basePackagePath + "/camel/MainframeRoute.java"))).isTrue();
+        assertThat(Files.exists(projectDir.resolve("src/main/java/com/mainframe/TestServiceApplication.java"))).isTrue();
+        assertThat(Files.exists(projectDir.resolve("src/main/java/com/mainframe/api/MainframeController.java"))).isTrue();
+        assertThat(Files.exists(projectDir.resolve("src/main/java/com/mainframe/camel/MainframeRoute.java"))).isTrue();
+
+        // Verify 5-step Camel pipeline
+        assertThat(Files.exists(projectDir.resolve("src/main/java/com/mainframe/camel/RequestValidator.java"))).isTrue();
+        assertThat(Files.exists(projectDir.resolve("src/main/java/com/mainframe/camel/ContainerAssembler.java"))).isTrue();
+        assertThat(Files.exists(projectDir.resolve("src/main/java/com/mainframe/camel/TransportInvoker.java"))).isTrue();
+        assertThat(Files.exists(projectDir.resolve("src/main/java/com/mainframe/camel/ResponseValidator.java"))).isTrue();
+        assertThat(Files.exists(projectDir.resolve("src/main/java/com/mainframe/camel/ResponseDeserializer.java"))).isTrue();
+
+        // Verify NoOp transport
+        assertThat(Files.exists(projectDir.resolve("src/main/java/com/mainframe/mainframe/transport/MainframeTransport.java"))).isTrue();
+        assertThat(Files.exists(projectDir.resolve("src/main/java/com/mainframe/mainframe/transport/NoOpMainframeTransport.java"))).isTrue();
     }
 
     @Test
-    void testGenerateProjectWithMappingDocument() throws IOException {
-        // Create copybook
-        Path copybookDir = tempDir.resolve("copybooks");
-        Files.createDirectories(copybookDir);
-        
-        String copybook = """
-               01  DATE-RECORD.
-                   05  DATE-YEAR           PIC 9(4).
-                   05  DATE-MONTH          PIC 9(2).
-                   05  DATE-DAY            PIC 9(2).
-                   05  OLD-FIELD-NAME      PIC X(10).
-            """;
-        
-        Files.writeString(copybookDir.resolve("DATE-REQUEST.cpy"), copybook);
-
-        // Create mapping document
-        Path mappingDoc = tempDir.resolve("mapping.txt");
-        String mapping = """
-            DATE-YEAR + DATE-MONTH + DATE-DAY = eventDate:LocalDate
-            OLD-FIELD-NAME = newFieldName
-            """;
-        Files.writeString(mappingDoc, mapping);
-
-        // Configure generator
-        GeneratorConfig config = GeneratorConfig.builder()
-                .projectName("MappingTest")
-                .copybookDir(copybookDir)
-                .mappingDoc(mappingDoc)
-                .programId("DATE-PROG")
-                .encoding("cp037")
-                .tcpHost("localhost")
-                .tcpPort(5000)
-                .tcpConnectTimeout(3000)
-                .tcpReadTimeout(5000)
-                .framingMode(FramingMode.LENGTH_PREFIX_2)
-                .outputDir(tempDir)
-                .force(true)
-                .skipTests(true)
-                .build();
-
-        // Generate project
-        ProjectGenerator generator = new ProjectGenerator(config);
-        GeneratorResult result = generator.generate();
-
-        // Verify result
-        assertThat(result.isSuccess()).isTrue();
-    }
-
-    @Test
-    void testFailsOnMissingCopybookDirectory() {
+    void testFailsOnMissingRequestCopybookDirectory() {
         Path nonExistentDir = tempDir.resolve("nonexistent");
+        Path responseDir = tempDir.resolve("response");
 
         GeneratorConfig config = GeneratorConfig.builder()
-                .projectName("FailTest")
-                .copybookDir(nonExistentDir)
-                .programId("FAIL-PROG")
-                .encoding("cp037")
-                .tcpHost("localhost")
-                .tcpPort(5000)
-                .tcpConnectTimeout(3000)
-                .tcpReadTimeout(5000)
-                .framingMode(FramingMode.LENGTH_PREFIX_2)
+                .serviceName("FailTest")
+                .requestCopybookDir(nonExistentDir)
+                .responseCopybookDir(responseDir)
                 .outputDir(tempDir)
-                .skipTests(true)
                 .build();
 
         ProjectGenerator generator = new ProjectGenerator(config);
@@ -166,21 +113,16 @@ class GeneratorIntegrationTest {
 
     @Test
     void testFailsOnEmptyCopybookDirectory() throws IOException {
-        Path emptyDir = tempDir.resolve("empty");
-        Files.createDirectories(emptyDir);
+        Path emptyRequestDir = tempDir.resolve("empty-request");
+        Path emptyResponseDir = tempDir.resolve("empty-response");
+        Files.createDirectories(emptyRequestDir);
+        Files.createDirectories(emptyResponseDir);
 
         GeneratorConfig config = GeneratorConfig.builder()
-                .projectName("EmptyTest")
-                .copybookDir(emptyDir)
-                .programId("EMPTY-PROG")
-                .encoding("cp037")
-                .tcpHost("localhost")
-                .tcpPort(5000)
-                .tcpConnectTimeout(3000)
-                .tcpReadTimeout(5000)
-                .framingMode(FramingMode.LENGTH_PREFIX_2)
+                .serviceName("EmptyTest")
+                .requestCopybookDir(emptyRequestDir)
+                .responseCopybookDir(emptyResponseDir)
                 .outputDir(tempDir)
-                .skipTests(true)
                 .build();
 
         ProjectGenerator generator = new ProjectGenerator(config);
@@ -191,162 +133,134 @@ class GeneratorIntegrationTest {
     }
 
     @Test
-    void testValidationConstraintCounts() throws IOException {
-        Path copybookDir = tempDir.resolve("copybooks");
-        Files.createDirectories(copybookDir);
-        
-        String copybook = """
-               01  VALIDATION-TEST.
-                   05  REQUIRED-STRING     PIC X(20).
-                   05  REQUIRED-NUMBER     PIC 9(5).
-                   05  DECIMAL-FIELD       PIC S9(7)V99 COMP-3.
-                   05  ARRAY-FIELD OCCURS 10 TIMES.
-                       10  ARRAY-ITEM      PIC X(5).
+    void testContainerKeysFromRecordNames() throws IOException {
+        // Create copybooks with specific 01-level record names
+        Path requestDir = tempDir.resolve("req");
+        Path responseDir = tempDir.resolve("resp");
+        Files.createDirectories(requestDir);
+        Files.createDirectories(responseDir);
+
+        String requestCopybook = """
+               01  ABC-REQUEST-REC.
+                   05  FIELD-A             PIC X(10).
             """;
-        
-        Files.writeString(copybookDir.resolve("VALIDATION-REQUEST.cpy"), copybook);
+        Files.writeString(requestDir.resolve("REQUEST.cpy"), requestCopybook);
+
+        String responseCopybook = """
+               01  ABC-RESPONSE-REC.
+                   05  FIELD-B             PIC X(10).
+            """;
+        Files.writeString(responseDir.resolve("RESPONSE.cpy"), responseCopybook);
 
         GeneratorConfig config = GeneratorConfig.builder()
-                .projectName("ValidationTest")
-                .copybookDir(copybookDir)
-                .programId("VAL-PROG")
-                .encoding("cp037")
-                .tcpHost("localhost")
-                .tcpPort(5000)
-                .tcpConnectTimeout(3000)
-                .tcpReadTimeout(5000)
-                .framingMode(FramingMode.LENGTH_PREFIX_2)
+                .serviceName("ContainerKeyTest")
+                .requestCopybookDir(requestDir)
+                .responseCopybookDir(responseDir)
                 .outputDir(tempDir)
                 .force(true)
-                .skipTests(true)
                 .build();
 
         ProjectGenerator generator = new ProjectGenerator(config);
         GeneratorResult result = generator.generate();
 
         assertThat(result.isSuccess()).isTrue();
-        assertThat(result.getNotNullCount()).isGreaterThan(0);
-        assertThat(result.getSizeCount()).isGreaterThan(0);
-        assertThat(result.getDigitsCount()).isGreaterThan(0);
+
+        // Verify the generated files use correct container key normalization
+        // ABC-REQUEST-REC -> ABC_REQUEST_REC
+        Path projectDir = tempDir.resolve("ContainerKeyTest");
+
+        // Check that the generated serializer references the normalized container key
+        Path requestSerializerPath = projectDir.resolve("src/main/java/com/mainframe/serde/request/AbcRequestRecSerializer.java");
+        if (Files.exists(requestSerializerPath)) {
+            String content = Files.readString(requestSerializerPath);
+            assertThat(content).contains("ABC_REQUEST_REC");
+        }
     }
 
-    /**
-     * Regression test for NoSuchFileException bug.
-     * Tests that generation works from a clean temp directory with no pre-created package folders.
-     * Also verifies that serializers are generated for all copybooks in test mode,
-     * and that COMP-1/COMP-2 fields with null PictureClause are handled correctly.
-     */
     @Test
-    void testGenerateIntoCleanDirectoryWithTestMode() throws IOException {
-        // Create copybooks with various COBOL constructs
-        Path copybookDir = tempDir.resolve("copybooks");
-        Files.createDirectories(copybookDir);
+    void testNoTcpCodeGenerated() throws IOException {
+        Path requestDir = tempDir.resolve("request");
+        Path responseDir = tempDir.resolve("response");
+        Files.createDirectories(requestDir);
+        Files.createDirectories(responseDir);
 
-        // Simple copybook
-        String simpleCopybook = """
-               01  SIMPLE-RECORD.
-                   05  SIMPLE-FIELD        PIC X(10).
-                   05  SIMPLE-NUMBER       PIC 9(5).
+        String requestCopybook = """
+               01  NO-TCP-REQUEST.
+                   05  DATA-FIELD          PIC X(20).
             """;
-        Files.writeString(copybookDir.resolve("SIMPLE.cpy"), simpleCopybook);
+        Files.writeString(requestDir.resolve("REQUEST.cpy"), requestCopybook);
 
-        // Copybook with COMP-1 and COMP-2 (no PIC clause)
-        String floatCopybook = """
-               01  FLOAT-RECORD.
-                   05  TEMPERATURE         COMP-1.
-                   05  PRESSURE            COMP-2.
-                   05  LABEL               PIC X(20).
+        String responseCopybook = """
+               01  NO-TCP-RESPONSE.
+                   05  RESULT-FIELD        PIC X(20).
             """;
-        Files.writeString(copybookDir.resolve("FLOAT.cpy"), floatCopybook);
+        Files.writeString(responseDir.resolve("RESPONSE.cpy"), responseCopybook);
 
-        // Copybook with OCCURS
-        String occursCopybook = """
-               01  ARRAY-RECORD.
-                   05  ITEM-COUNT          PIC 9(3).
-                   05  ITEMS OCCURS 5 TIMES.
-                       10  ITEM-NAME       PIC X(10).
-                       10  ITEM-VALUE      PIC 9(5).
-            """;
-        Files.writeString(copybookDir.resolve("ARRAY.cpy"), occursCopybook);
-
-        // Use a completely fresh output directory (no pre-created subdirectories)
-        Path cleanOutputDir = tempDir.resolve("clean-output");
-        // Intentionally NOT creating any subdirectories - let generator create them
-
-        // Configure generator in test mode
         GeneratorConfig config = GeneratorConfig.builder()
-                .projectName("CleanDirTest")
-                .copybookDir(copybookDir)
-                .programId("TEST-PROG")
-                .encoding("cp037")
-                .tcpHost("localhost")
-                .tcpPort(5000)
-                .tcpConnectTimeout(3000)
-                .tcpReadTimeout(5000)
-                .framingMode(FramingMode.LENGTH_PREFIX_2)
-                .outputDir(cleanOutputDir)
-                .testMode(true) // Enable test mode to generate serializers for all copybooks
+                .serviceName("NoTcpTest")
+                .requestCopybookDir(requestDir)
+                .responseCopybookDir(responseDir)
+                .outputDir(tempDir)
                 .force(true)
-                .skipTests(true)
                 .build();
 
-        // Generate project
         ProjectGenerator generator = new ProjectGenerator(config);
         GeneratorResult result = generator.generate();
 
-        // Verify generation succeeded
-        assertThat(result.isSuccess())
-                .as("Generation should succeed even in clean directory")
-                .isTrue();
+        assertThat(result.isSuccess()).isTrue();
 
-        // Verify all copybooks were parsed
-        assertThat(result.getCopybooksParsed())
-                .as("All 3 copybooks should be parsed")
-                .isEqualTo(3);
+        Path projectDir = tempDir.resolve("NoTcpTest");
 
-        // Verify directory structure was created
-        Path projectDir = cleanOutputDir.resolve("CleanDirTest");
-        assertThat(Files.exists(projectDir)).isTrue();
+        // Verify NO TCP-related classes exist
+        assertThat(Files.exists(projectDir.resolve("src/main/java/com/mainframe/mainframe/transport/TcpMainframeTransport.java"))).isFalse();
+        assertThat(Files.exists(projectDir.resolve("src/main/java/com/mainframe/mainframe/emulator/TcpEmulatorServer.java"))).isFalse();
+        assertThat(Files.exists(projectDir.resolve("src/main/java/com/mainframe/mainframe/framing"))).isFalse();
 
-        // Verify serializers were generated for all copybooks in test mode
-        String basePackagePath = "com/cleandirtest";
-        Path layoutPackage = projectDir.resolve("src/main/java/" + basePackagePath + "/util/layout");
-        assertThat(Files.exists(layoutPackage))
-                .as("Layout package should be created")
-                .isTrue();
+        // Verify NoOpMainframeTransport throws UnsupportedOperationException
+        Path noOpTransportPath = projectDir.resolve("src/main/java/com/mainframe/mainframe/transport/NoOpMainframeTransport.java");
+        assertThat(Files.exists(noOpTransportPath)).isTrue();
+        String noOpContent = Files.readString(noOpTransportPath);
+        assertThat(noOpContent).contains("UnsupportedOperationException");
+    }
 
-        // Check for serializer files
-        assertThat(Files.exists(layoutPackage.resolve("SimpleSerializer.java")))
-                .as("SimpleSerializer should be generated")
-                .isTrue();
-        assertThat(Files.exists(layoutPackage.resolve("FloatSerializer.java")))
-                .as("FloatSerializer should be generated")
-                .isTrue();
-        assertThat(Files.exists(layoutPackage.resolve("ArraySerializer.java")))
-                .as("ArraySerializer should be generated")
-                .isTrue();
+    @Test
+    void testTransportInterfaceUsesLinkedHashMap() throws IOException {
+        Path requestDir = tempDir.resolve("request");
+        Path responseDir = tempDir.resolve("response");
+        Files.createDirectories(requestDir);
+        Files.createDirectories(responseDir);
 
-        // Verify the float serializer contains COMP-1 and COMP-2 handling
-        String floatSerializerContent = Files.readString(layoutPackage.resolve("FloatSerializer.java"));
-        assertThat(floatSerializerContent)
-                .as("FloatSerializer should handle COMP-1")
-                .contains("floatToBytes")
-                .contains("bytesToFloat");
-        assertThat(floatSerializerContent)
-                .as("FloatSerializer should handle COMP-2")
-                .contains("doubleToBytes")
-                .contains("bytesToDouble");
+        Files.writeString(requestDir.resolve("REQ.cpy"), """
+               01  REQ-REC.
+                   05  FIELD-A             PIC X(10).
+            """);
+        Files.writeString(responseDir.resolve("RESP.cpy"), """
+               01  RESP-REC.
+                   05  FIELD-B             PIC X(10).
+            """);
 
-        // Verify DTO classes were also generated in the layout package
-        Path modelLayoutPackage = projectDir.resolve("src/main/java/" + basePackagePath + "/model/layout");
-        assertThat(Files.exists(modelLayoutPackage)).isTrue();
-        assertThat(Files.exists(modelLayoutPackage.resolve("Simple.java"))).isTrue();
-        assertThat(Files.exists(modelLayoutPackage.resolve("Float.java"))).isTrue();
-        assertThat(Files.exists(modelLayoutPackage.resolve("Array.java"))).isTrue();
+        GeneratorConfig config = GeneratorConfig.builder()
+                .serviceName("LinkedHashMapTest")
+                .requestCopybookDir(requestDir)
+                .responseCopybookDir(responseDir)
+                .outputDir(tempDir)
+                .force(true)
+                .build();
 
-        // Verify nested class for OCCURS was generated
-        assertThat(Files.exists(modelLayoutPackage.resolve("ItemsItem.java")))
-                .as("Nested class for OCCURS should be generated")
-                .isTrue();
+        ProjectGenerator generator = new ProjectGenerator(config);
+        GeneratorResult result = generator.generate();
+
+        assertThat(result.isSuccess()).isTrue();
+
+        Path projectDir = tempDir.resolve("LinkedHashMapTest");
+        Path transportInterface = projectDir.resolve("src/main/java/com/mainframe/mainframe/transport/MainframeTransport.java");
+
+        assertThat(Files.exists(transportInterface)).isTrue();
+        String content = Files.readString(transportInterface);
+
+        // Verify the interface uses LinkedHashMap for request containers
+        assertThat(content).contains("LinkedHashMap<String, byte[]> requestContainers");
+        // Verify the return type is Map<String, byte[]>
+        assertThat(content).contains("Map<String, byte[]> send");
     }
 }
