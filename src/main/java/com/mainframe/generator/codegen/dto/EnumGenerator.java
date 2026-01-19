@@ -1,111 +1,147 @@
 package com.mainframe.generator.codegen.dto;
 
 import com.mainframe.generator.codegen.DtoMetadata;
+import com.mainframe.generator.codegen.copybook.service.CopybookQueryService;
+import com.mainframe.generator.codegen.copybook.util.EnumNamingUtil;
+import com.mainframe.generator.codegen.model.input.CopybookModel;
+import com.mainframe.generator.codegen.model.input.Enum88Node;
+import com.mainframe.generator.codegen.model.input.FieldNode;
+import com.mainframe.generator.codegen.model.input.MappingDocument;
 import com.mainframe.generator.codegen.util.FileWriteUtil;
 import com.mainframe.generator.codegen.util.NamingUtil;
-import com.mainframe.generator.mapping.MappingDocument;
-import com.mainframe.generator.model.CopybookModel;
-import com.mainframe.generator.model.Enum88Node;
-import com.mainframe.generator.model.FieldNode;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.stream.Stream;
 
 /**
  * Generates enum classes from COBOL 88-level values.
  *
- * FIX: Enums are now generated into the SAME package as the DTO that references them.
+ * Design:
+ * - CopybookModel remains passive (no getAllFields()).
+ * - Traversal is done via CopybookQueryService.
+ * - Enums are generated into the SAME package as the owning DTO:
+ *     <packageRoot>.model.<packageType>
+ *
+ * Package root is derived from the generated project structure
+ * by locating src/main/java/{**}/model.
  */
 public class EnumGenerator {
+
     private static final Logger log = LoggerFactory.getLogger(EnumGenerator.class);
 
-    private final String basePackage;
     private final MappingDocument mappingDoc;
     private final Map<CopybookModel, DtoMetadata> dtoMetadataMap;
-    private final Map<String, String> generatedEnums = new HashMap<>(); // enumName -> packageType
 
-    public EnumGenerator(String basePackage, MappingDocument mappingDoc,
+    private final CopybookQueryService queryService = new CopybookQueryService();
+
+    /** Prevent duplicate enum generation (key = fully qualified class name). */
+    private final Set<String> generatedEnumFqcns = new HashSet<>();
+
+    public EnumGenerator(MappingDocument mappingDoc,
                          Map<CopybookModel, DtoMetadata> dtoMetadataMap) {
-        this.basePackage = basePackage;
-        this.mappingDoc = mappingDoc;
-        this.dtoMetadataMap = dtoMetadataMap;
+        this.mappingDoc = Objects.requireNonNull(mappingDoc, "mappingDoc");
+        this.dtoMetadataMap = Objects.requireNonNull(dtoMetadataMap, "dtoMetadataMap");
     }
 
-    /**
-     * Generate all enum classes for the given models.
-     */
+    /** Entry point */
     public void generateEnums(Path projectDir) throws IOException {
         log.info("Generating enum classes...");
+
+        String packageRoot = resolvePackageRoot(projectDir);
+        int generated = 0;
 
         for (Map.Entry<CopybookModel, DtoMetadata> entry : dtoMetadataMap.entrySet()) {
             CopybookModel model = entry.getKey();
             DtoMetadata metadata = entry.getValue();
 
-            // Skip deduped DTOs
-            if (metadata.isDeduped()) {
+            if (metadata == null || metadata.isDeduped()) {
+                continue; // deduped DTOs do not generate code
+            }
+
+            generated += generateEnumsForModel(projectDir, packageRoot, model, metadata);
+        }
+
+        log.info("Generated {} enum classes", generated);
+    }
+
+    private int generateEnumsForModel(Path projectDir,
+                                      String packageRoot,
+                                      CopybookModel model,
+                                      DtoMetadata metadata) throws IOException {
+        int generated = 0;
+        String packageType = resolvePackageType(metadata);
+
+        for (FieldNode field : queryService.getAllFields(model.getRootGroup())) {
+            if (!shouldGenerateEnum(field)) {
                 continue;
             }
 
-            generateEnumsForModel(projectDir, model, metadata);
-        }
-
-        log.info("Generated {} enum classes", generatedEnums.size());
-    }
-
-    private void generateEnumsForModel(Path projectDir, CopybookModel model,
-                                        DtoMetadata metadata) throws IOException {
-        String packageType = metadata.getPackageType();
-
-        for (FieldNode field : model.getAllFields()) {
-            if (shouldGenerateEnum(field)) {
-                generateEnumClass(projectDir, field, packageType);
+            if (generateEnumClass(projectDir, packageRoot, field, packageType)) {
+                generated++;
             }
         }
+        return generated;
     }
 
     private boolean shouldGenerateEnum(FieldNode field) {
-        return field.hasEnum88Values() &&
-               !field.isFiller() &&
-               !mappingDoc.shouldIgnore(field.getName());
+        return field != null
+                && field.hasEnum88Values()
+                && !field.isFiller()
+                && field.getName() != null
+                && !mappingDoc.shouldIgnore(field.getName());
     }
 
-    private void generateEnumClass(Path projectDir, FieldNode field,
-                                     String packageType) throws IOException {
-        String enumName = NamingUtil.toPascalCase(field.getName()) + "Enum";
+    private boolean generateEnumClass(Path projectDir,
+                                      String packageRoot,
+                                      FieldNode field,
+                                      String packageType) throws IOException {
 
-        // Check for collision
-        if (hasCollision(enumName, packageType)) {
-            log.warn("Skipping duplicate enum class generation: {} for field {} in package {}",
-                    enumName, field.getName(), packageType);
-            return;
+        String enumName = NamingUtil.toPascalCase(field.getName()) + "Enum";
+        String fqcn = packageRoot + ".model." + packageType + "." + enumName;
+
+        if (!generatedEnumFqcns.add(fqcn)) {
+            log.debug("Skipping duplicate enum: {}", fqcn);
+            return false;
         }
 
-        generatedEnums.put(enumName, packageType);
-        writeEnumFile(projectDir, field, enumName, packageType);
+        String content = buildEnumContent(packageRoot, field, enumName, packageType);
+        if (content == null) {
+            return false;
+        }
+
+        Path outputFile = projectDir.resolve(
+                "src/main/java/"
+                        + packageRoot.replace('.', '/')
+                        + "/model/"
+                        + packageType
+                        + "/"
+                        + enumName
+                        + ".java"
+        );
+
+        FileWriteUtil.safeWriteString(outputFile, content);
+        log.debug("Generated enum {}", fqcn);
+        return true;
     }
 
-    private boolean hasCollision(String enumName, String packageType) {
-        String existingPackage = generatedEnums.get(enumName);
-        return existingPackage != null && existingPackage.equals(packageType);
-    }
+    private String buildEnumContent(String packageRoot,
+                                    FieldNode field,
+                                    String enumName,
+                                    String packageType) {
 
-    private void writeEnumFile(Path projectDir, FieldNode field, String enumName,
-                                String packageType) throws IOException {
-        String packagePath = basePackage.replace('.', '/') + "/model/" + packageType;
-        Path enumFile = projectDir.resolve("src/main/java/" + packagePath + "/" + enumName + ".java");
+        List<String> constants = buildEnumConstants(field);
+        if (constants.isEmpty()) {
+            return null;
+        }
 
-        String content = buildEnumContent(field, enumName, packageType);
-        FileWriteUtil.safeWriteString(enumFile, content);
-
-        log.debug("Generated enum: {} in package model.{}", enumName, packageType);
-    }
-
-    private String buildEnumContent(FieldNode field, String enumName, String packageType) {
         StringBuilder sb = new StringBuilder();
-        sb.append("package ").append(basePackage).append(".model.").append(packageType).append(";\n\n");
+        sb.append("package ").append(packageRoot).append(".model.").append(packageType).append(";\n\n");
         sb.append("import lombok.Getter;\n");
         sb.append("import lombok.RequiredArgsConstructor;\n\n");
         sb.append("/**\n");
@@ -115,7 +151,10 @@ public class EnumGenerator {
         sb.append("@RequiredArgsConstructor\n");
         sb.append("public enum ").append(enumName).append(" {\n");
 
-        appendEnumConstants(sb, field);
+        for (int i = 0; i < constants.size(); i++) {
+            sb.append("    ").append(constants.get(i));
+            sb.append(i < constants.size() - 1 ? ",\n" : ";\n");
+        }
 
         sb.append("\n    private final String value;\n");
         sb.append("}\n");
@@ -123,40 +162,65 @@ public class EnumGenerator {
         return sb.toString();
     }
 
-    private void appendEnumConstants(StringBuilder sb, FieldNode field) {
+    private List<String> buildEnumConstants(FieldNode field) {
         List<Enum88Node> enums = field.getEnum88Values();
-        Set<String> usedConstantNames = new HashSet<>();
-        List<String> validConstants = new ArrayList<>();
+        if (enums == null || enums.isEmpty()) {
+            return Collections.emptyList();
+        }
 
-        // Collect valid constants
-        for (Enum88Node enum88 : enums) {
-            String constName = enum88.toJavaEnumConstant();
-            String value = enum88.getPrimaryValue();
+        Set<String> usedNames = new HashSet<>();
+        List<String> constants = new ArrayList<>();
 
-            if (!usedConstantNames.add(constName)) {
-                log.warn("Duplicate enum constant name detected: {} (value '{}'). Skipped.",
-                        constName, value);
+        for (Enum88Node e : enums) {
+            String name = EnumNamingUtil.toJavaEnumConstant(e.getName());
+            String value = e.getPrimaryValue();
+
+            if (name == null || value == null || !usedNames.add(name)) {
                 continue;
             }
 
-            validConstants.add(constName + "(\"" + value + "\")");
+            constants.add(name + "(\"" + escape(value) + "\")");
         }
 
-        // Append constants
-        for (int i = 0; i < validConstants.size(); i++) {
-            sb.append("    ").append(validConstants.get(i));
-            sb.append(i < validConstants.size() - 1 ? ",\n" : ";\n");
+        return constants;
+    }
+
+    private String resolvePackageType(DtoMetadata metadata) {
+        if (metadata.getPackageType() != null && !metadata.getPackageType().isBlank()) {
+            return metadata.getPackageType();
         }
+        return "layout";
     }
 
     /**
-     * Get the package type where an enum for this field will be generated.
+     * Derives the Java package root by locating:
+     *   src/main/java/<packageRoot>/model
      */
-    public String getEnumPackageType(FieldNode field, CopybookModel owningModel) {
-        DtoMetadata metadata = dtoMetadataMap.get(owningModel);
-        if (metadata != null) {
-            return metadata.getPackageType();
+    private String resolvePackageRoot(Path projectDir) throws IOException {
+        Path javaRoot = projectDir.resolve("src/main/java");
+        if (!Files.exists(javaRoot)) {
+            throw new IOException("Java source root does not exist: " + javaRoot);
         }
-        return "layout"; // fallback
+
+        try (Stream<Path> walk = Files.walk(javaRoot)) {
+            Path modelDir = walk
+                    .filter(Files::isDirectory)
+                    .filter(p -> "model".equals(p.getFileName().toString()))
+                    .map(Path::getParent)
+                    .filter(Objects::nonNull)
+                    .findFirst()
+                    .orElseThrow(() ->
+                            new IOException("Unable to derive package root (no 'model' dir found)")
+                    );
+
+            return javaRoot.relativize(modelDir)
+                    .toString()
+                    .replace('/', '.')
+                    .replace('\\', '.');
+        }
+    }
+
+    private static String escape(String s) {
+        return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 }

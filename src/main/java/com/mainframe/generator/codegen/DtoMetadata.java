@@ -1,6 +1,7 @@
 package com.mainframe.generator.codegen;
 
-import com.mainframe.generator.model.CopybookModel;
+import com.mainframe.generator.codegen.model.input.CopybookModel;
+
 import lombok.Builder;
 import lombok.Data;
 

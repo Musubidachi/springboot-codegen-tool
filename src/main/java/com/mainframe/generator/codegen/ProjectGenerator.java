@@ -1,5 +1,27 @@
 package com.mainframe.generator.codegen;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.mainframe.generator.codegen.copybook.service.CopybookDependencyResolverService;
+import com.mainframe.generator.codegen.copybook.service.CopybookDiscoveryService;
+import com.mainframe.generator.codegen.copybook.service.CopybookLoadingService;
+import com.mainframe.generator.codegen.copybook.service.CopybookParserService;
+import com.mainframe.generator.codegen.copybook.util.PictureClause;
 import com.mainframe.generator.codegen.dto.EnumGenerator;
 import com.mainframe.generator.codegen.dto.metadata.DtoDeduplicator;
 import com.mainframe.generator.codegen.dto.metadata.DtoInheritanceDetector;
@@ -7,22 +29,23 @@ import com.mainframe.generator.codegen.dto.metadata.DtoMetadataBuilder;
 import com.mainframe.generator.codegen.dto.metadata.DtoPackageClassifier;
 import com.mainframe.generator.codegen.dto.wrapper.WrapperDecisionMaker;
 import com.mainframe.generator.codegen.dto.wrapper.WrapperGenerator;
-import com.mainframe.generator.codegen.util.FileWriteUtil;
+import com.mainframe.generator.codegen.mapping.MappingDocumentService;
+import com.mainframe.generator.codegen.model.core.context.GeneratorConfig;
+import com.mainframe.generator.codegen.model.core.context.ToolDiagnostics;
+import com.mainframe.generator.codegen.model.input.CopybookModel;
+import com.mainframe.generator.codegen.model.input.CopybookNode;
+import com.mainframe.generator.codegen.model.input.FieldNode;
+import com.mainframe.generator.codegen.model.input.GroupNode;
+import com.mainframe.generator.codegen.model.input.MappingDocument;
+import com.mainframe.generator.codegen.model.input.UsageType;
+import com.mainframe.generator.codegen.project.ApplicationYamlGenerator;
+import com.mainframe.generator.codegen.project.PomGenerator;
+import com.mainframe.generator.codegen.project.ProjectStructureService;
 import com.mainframe.generator.codegen.util.NamingUtil;
-import com.mainframe.generator.mapping.MappingDocument;
-import com.mainframe.generator.mapping.MappingParser;
-import com.mainframe.generator.model.*;
-import com.mainframe.generator.parser.CopybookResolver;
 import com.mainframe.generator.validation.ValidationConstraintGenerator;
-import freemarker.template.Configuration;
-import freemarker.template.Template;
-import freemarker.template.TemplateExceptionHandler;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
-import java.io.*;
-import java.nio.file.*;
-import java.util.*;
+import freemarker.template.Configuration;
+import freemarker.template.TemplateExceptionHandler;
 
 /**
  * Main project generator that creates a complete Spring Boot project
@@ -77,16 +100,26 @@ public class ProjectGenerator {
         try {
             log.info("Starting project generation...");
             
+            ToolDiagnostics diagnostics = new ToolDiagnostics();
+            
             // Step 1: Parse copybooks
             log.info("Step 1: Parsing copybooks...");
-            CopybookResolver resolver = new CopybookResolver(
-                    config.getCopybookDir(), 
-                    config.getExternalCopybookDirs()
+
+            // Parse and resolve COPY directives (primary dir + optional external dirs)
+            CopybookLoadingService loadingService = new CopybookLoadingService(
+                    new CopybookDiscoveryService(),
+                    new CopybookParserService(),
+                    new CopybookDependencyResolverService()
             );
-            copybookModels = resolver.loadAllCopybooks();
+
+            copybookModels = loadingService.loadAll(
+                    config.getCopybookDir(),
+                    config.getExternalCopybookDirs(),
+                    diagnostics
+            );
             
-            if (resolver.hasErrors()) {
-                return GeneratorResult.failure(resolver.getErrorSummary());
+            if (diagnostics.hasErrors()) {
+                return GeneratorResult.failure(diagnostics.getErrors().toString());
             }
             
             if (copybookModels.isEmpty()) {
@@ -101,27 +134,52 @@ public class ProjectGenerator {
 
             // Step 2: Parse mapping document
             log.info("Step 2: Parsing mapping document...");
-            if (config.getMappingDoc() != null) {
-                MappingParser mappingParser = new MappingParser();
-                mappingDoc = mappingParser.parse(config.getMappingDoc());
-                if (mappingDoc.hasErrors()) {
-                    log.warn("Mapping document has errors: {}", mappingDoc.getErrors());
-                }
-            } else {
-                mappingDoc = new MappingDocument();
+            MappingDocumentService mappingService = new MappingDocumentService();
+            mappingDoc = mappingService.load(config, diagnostics);
+            if (diagnostics.hasErrors()) {
+                return GeneratorResult.failure(diagnostics.getErrors().toString());
             }
             
             // Step 3: Create output directory
             log.info("Step 3: Creating project structure...");
-            Path projectDir = createProjectStructure();
+            ProjectStructureService structureService = new ProjectStructureService();
+            Path projectDir = structureService.createProjectStructure(config);
+
             
             // Step 4: Generate pom.xml
             log.info("Step 4: Generating pom.xml...");
-            generatePom(projectDir);
+            PomGenerator pomGenerator = new PomGenerator();
+
+            PomGenerator.PomInfo pomInfo = new PomGenerator.PomInfo(
+                    /* groupId */     "com.mainframe",      
+                    /* artifactId */  "poc",
+                    /* version */     "1.0.0-SNAPSHOT",
+                    /* name */        config.getProjectName(),
+                    /* description */ "Generated Spring Boot + Camel mainframe integration project"
+            );
+
+            pomGenerator.generatePom(projectDir, pomInfo);
+
             
             // Step 5: Generate application.yml
             log.info("Step 5: Generating application.yml...");
-            generateApplicationYml(projectDir);
+            ApplicationYamlGenerator ymlGenerator = new ApplicationYamlGenerator();
+
+            ApplicationYamlGenerator.AppYamlInfo ymlInfo =
+                    new ApplicationYamlGenerator.AppYamlInfo(
+                            config.getProjectName(),
+                            config.getProgramId(),
+                            config.getTcpHost(),
+                            config.getTcpPort(),
+                            config.getTcpConnectTimeout(),
+                            config.getTcpReadTimeout(),
+                            config.getFramingMode(),
+                            config.getEncoding(),
+                            /* loggingPackage */ "com.mainframe"
+                    );
+
+            ymlGenerator.generate(projectDir, ymlInfo);
+
             
             // Step 6: Generate enums FIRST (DTOs reference them)
             log.info("Step 6: Generating enum classes...");
@@ -131,6 +189,32 @@ public class ProjectGenerator {
             log.info("Step 7: Generating model classes...");
             int dtoCount = generateModelClasses(projectDir);
 
+            /*
+             * TODO: Need to add envelope logic here 
+             * 
+             *             log.info("Step 3: Generating parent envelopes...");
+
+            DtoMetadata reqRoot = dtoMetadataMap.get(requestCopybook);
+            DtoMetadata resRoot = dtoMetadataMap.get(responseCopybook);
+
+            EnvelopeGenerator envelopeGenerator = new EnvelopeGenerator(config.getProgramId());
+            envelopeGenerator.generateRequestEnvelope(projectDir, reqRoot);
+            envelopeGenerator.generateResponseEnvelope(projectDir, resRoot);
+
+
+            if (reqRoot == null) {
+                return GeneratorResult.failure("Request root DTO metadata not found for: " + requestCopybook.getName());
+            }
+            if (resRoot == null) {
+                return GeneratorResult.failure("Response root DTO metadata not found for: " + responseCopybook.getName());
+            }
+
+            envelopeGen.generateRequestEnvelope(projectDir, reqRoot);
+            envelopeGen.generateResponseEnvelope(projectDir, resRoot);
+             * 
+             * 
+             */
+            
             // Step 8: Generate wrapper classes (ApiRequest/ApiResponse)
             log.info("Step 8: Generating wrapper classes...");
             generateWrapperClasses(projectDir);
@@ -567,233 +651,7 @@ public class ProjectGenerator {
         // For now, we rely on isStructuralSubset which already checks these
         return true;
     }
-
-    private Path createProjectStructure() throws IOException {
-        Path projectDir = config.getOutputDir().resolve(config.getProjectName());
-        
-        if (Files.exists(projectDir)) {
-            if (config.isForce()) {
-                deleteDirectory(projectDir);
-            } else {
-                throw new IOException("Project directory already exists: " + projectDir);
-            }
-        }
-        
-        // Create directory structure
-        String basePackagePath = config.getBasePackage().replace('.', '/');
-        
-        Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/config"));
-        Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/controller"));
-        Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/camel"));
-        Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/mainframe/transport"));
-        Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/mainframe/framing"));
-        Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/mainframe/emulator"));
-        Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/model/request"));
-        Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/model/response"));
-        Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/model/shared"));
-        Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/model/layout"));
-        Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/service"));
-        Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/util"));
-        Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/util/request"));
-        Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/util/response"));
-        Files.createDirectories(projectDir.resolve("src/main/java/" + basePackagePath + "/util/shared"));
-        
-        Files.createDirectories(projectDir.resolve("src/test/java/" + basePackagePath + "/model/request"));
-        Files.createDirectories(projectDir.resolve("src/test/java/" + basePackagePath + "/model/response"));
-        Files.createDirectories(projectDir.resolve("src/test/java/" + basePackagePath + "/serializer"));
-        Files.createDirectories(projectDir.resolve("src/test/java/" + basePackagePath + "/torture"));
-        Files.createDirectories(projectDir.resolve("src/test/java/" + basePackagePath + "/tcp"));
-        Files.createDirectories(projectDir.resolve("src/test/java/" + basePackagePath + "/camel"));
-        Files.createDirectories(projectDir.resolve("src/test/java/" + basePackagePath + "/controller"));
-        
-        Files.createDirectories(projectDir.resolve("src/main/resources"));
-        Files.createDirectories(projectDir.resolve("src/test/resources"));
-        
-        return projectDir;
-    }
     
-    private void deleteDirectory(Path dir) throws IOException {
-        if (Files.exists(dir)) {
-            Files.walk(dir)
-                    .sorted(Comparator.reverseOrder())
-                    .map(Path::toFile)
-                    .forEach(File::delete);
-        }
-    }
-    
-    private void generatePom(Path projectDir) throws IOException {
-        String pom = generatePomContent();
-        safeWriteString(projectDir.resolve("pom.xml"), pom);
-    }
-    
-    private String generatePomContent() {
-        return String.format("""
-                <?xml version="1.0" encoding="UTF-8"?>
-                <project xmlns="http://maven.apache.org/POM/4.0.0"
-                         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-                         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-                    <modelVersion>4.0.0</modelVersion>
-                
-                    <parent>
-                        <groupId>org.springframework.boot</groupId>
-                        <artifactId>spring-boot-starter-parent</artifactId>
-                        <version>3.2.1</version>
-                        <relativePath/>
-                    </parent>
-                
-                    <groupId>%s</groupId>
-                    <artifactId>%s</artifactId>
-                    <version>1.0.0-SNAPSHOT</version>
-                    <packaging>jar</packaging>
-                
-                    <name>%s</name>
-                    <description>Generated Spring Boot + Camel mainframe integration project</description>
-                
-                    <properties>
-                        <java.version>17</java.version>
-                        <camel.version>4.3.0</camel.version>
-                    </properties>
-                
-                    <dependencyManagement>
-                        <dependencies>
-                            <dependency>
-                                <groupId>org.apache.camel.springboot</groupId>
-                                <artifactId>camel-spring-boot-bom</artifactId>
-                                <version>${camel.version}</version>
-                                <type>pom</type>
-                                <scope>import</scope>
-                            </dependency>
-                        </dependencies>
-                    </dependencyManagement>
-                
-                    <dependencies>
-                        <!-- Spring Boot -->
-                        <dependency>
-                            <groupId>org.springframework.boot</groupId>
-                            <artifactId>spring-boot-starter-web</artifactId>
-                        </dependency>
-                        <dependency>
-                            <groupId>org.springframework.boot</groupId>
-                            <artifactId>spring-boot-starter-validation</artifactId>
-                        </dependency>
-                
-                        <!-- Apache Camel -->
-                        <dependency>
-                            <groupId>org.apache.camel.springboot</groupId>
-                            <artifactId>camel-spring-boot-starter</artifactId>
-                        </dependency>
-                        <dependency>
-                            <groupId>org.apache.camel.springboot</groupId>
-                            <artifactId>camel-direct-starter</artifactId>
-                        </dependency>
-                
-                        <!-- Lombok -->
-                        <dependency>
-                            <groupId>org.projectlombok</groupId>
-                            <artifactId>lombok</artifactId>
-                            <scope>provided</scope>
-                        </dependency>
-                
-                        <!-- Jackson -->
-                        <dependency>
-                            <groupId>com.fasterxml.jackson.core</groupId>
-                            <artifactId>jackson-databind</artifactId>
-                        </dependency>
-                        <dependency>
-                            <groupId>com.fasterxml.jackson.datatype</groupId>
-                            <artifactId>jackson-datatype-jsr310</artifactId>
-                        </dependency>
-                
-                        <!-- Testing -->
-                        <dependency>
-                            <groupId>org.springframework.boot</groupId>
-                            <artifactId>spring-boot-starter-test</artifactId>
-                            <scope>test</scope>
-                        </dependency>
-                        <dependency>
-                            <groupId>org.apache.camel</groupId>
-                            <artifactId>camel-test-spring-junit5</artifactId>
-                            <scope>test</scope>
-                        </dependency>
-                    </dependencies>
-                
-                    <build>
-                        <plugins>
-                            <plugin>
-                                <groupId>org.springframework.boot</groupId>
-                                <artifactId>spring-boot-maven-plugin</artifactId>
-                                <configuration>
-                                    <excludes>
-                                        <exclude>
-                                            <groupId>org.projectlombok</groupId>
-                                            <artifactId>lombok</artifactId>
-                                        </exclude>
-                                    </excludes>
-                                </configuration>
-                            </plugin>
-                        </plugins>
-                    </build>
-                </project>
-                """, config.getBasePackage(), config.getArtifactId(), config.getProjectName());
-    }
-    
-    private void generateApplicationYml(Path projectDir) throws IOException {
-        String yml = String.format("""
-                server:
-                  port: 8080
-                
-                spring:
-                  application:
-                    name: %s
-                
-                mainframe:
-                  program-id: %s
-                  tcp:
-                    host: %s
-                    port: %d
-                    connect-timeout-ms: %d
-                    read-timeout-ms: %d
-                    framing: %s
-                    encoding: %s
-                
-                camel:
-                  springboot:
-                    name: %s
-                
-                logging:
-                  level:
-                    %s: DEBUG
-                    org.apache.camel: INFO
-                """,
-                config.getProjectName(),
-                config.getProgramId(),
-                config.getTcpHost(),
-                config.getTcpPort(),
-                config.getTcpConnectTimeout(),
-                config.getTcpReadTimeout(),
-                config.getFramingMode(),
-                config.getEncoding(),
-                config.getProjectName(),
-                config.getBasePackage()
-        );
-        
-        safeWriteString(projectDir.resolve("src/main/resources/application.yml"), yml);
-        
-        // Also create test application.yml
-        String testYml = """
-                spring:
-                  profiles:
-                    active: test
-                
-                mainframe:
-                  tcp:
-                    host: localhost
-                    port: 0
-                    framing: LENGTH_PREFIX_2
-                """;
-        safeWriteString(projectDir.resolve("src/test/resources/application.yml"), testYml);
-    }
-
     /**
      * Generate multi-copybook wrapper classes (ApiRequest/ApiResponse).
      * These wrappers contain fields for each copybook DTO in the request/response sets.
@@ -1290,8 +1148,7 @@ public class ProjectGenerator {
      * FIX: Generate enums using EnumGenerator - enums go into the SAME package as the DTO.
      */
     private void generateEnumClasses(Path projectDir) throws IOException {
-        EnumGenerator enumGenerator = new EnumGenerator(
-                config.getBasePackage(), mappingDoc, dtoMetadataMap);
+        EnumGenerator enumGenerator = new EnumGenerator(mappingDoc, dtoMetadataMap);
         enumGenerator.generateEnums(projectDir);
     }
     

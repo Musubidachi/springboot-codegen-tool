@@ -2,6 +2,10 @@ package com.mainframe.generator.mapping;
 
 import org.junit.jupiter.api.Test;
 
+import com.mainframe.generator.codegen.mapping.MappingParser;
+import com.mainframe.generator.codegen.model.input.MappingDocument;
+import com.mainframe.generator.codegen.model.input.MappingEntry;
+
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.*;

@@ -1,5 +1,8 @@
 package com.mainframe.generator.validation;
 
+import com.mainframe.generator.codegen.copybook.util.PictureClause;
+import com.mainframe.generator.codegen.model.input.FieldNode;
+import com.mainframe.generator.codegen.model.input.GroupNode;
 import com.mainframe.generator.model.*;
 import lombok.Builder;
 import lombok.Data;

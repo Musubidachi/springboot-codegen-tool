@@ -1,11 +1,11 @@
 package com.mainframe.generator.codegen.dto;
 
+import com.mainframe.generator.codegen.model.input.CopybookNode;
+import com.mainframe.generator.codegen.model.input.FieldNode;
+import com.mainframe.generator.codegen.model.input.GroupNode;
+import com.mainframe.generator.codegen.model.input.MappingDocument;
 import com.mainframe.generator.codegen.util.ImportManager;
 import com.mainframe.generator.codegen.util.NamingUtil;
-import com.mainframe.generator.mapping.MappingDocument;
-import com.mainframe.generator.model.CopybookNode;
-import com.mainframe.generator.model.FieldNode;
-import com.mainframe.generator.model.GroupNode;
 import com.mainframe.generator.validation.ValidationConstraintGenerator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

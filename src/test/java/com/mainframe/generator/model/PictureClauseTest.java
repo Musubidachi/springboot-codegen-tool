@@ -4,6 +4,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
+import com.mainframe.generator.codegen.copybook.util.PictureClause;
+import com.mainframe.generator.codegen.model.input.UsageType;
+
 import static org.assertj.core.api.Assertions.*;
 
 /**

@@ -1,10 +1,10 @@
 package com.mainframe.generator.codegen.dto.metadata;
 
 import com.mainframe.generator.codegen.DtoMetadata;
-import com.mainframe.generator.codegen.GeneratorConfig;
 import com.mainframe.generator.codegen.StructuralSignatureCalculator;
+import com.mainframe.generator.codegen.model.core.context.GeneratorConfig;
+import com.mainframe.generator.codegen.model.input.CopybookModel;
 import com.mainframe.generator.codegen.util.NamingUtil;
-import com.mainframe.generator.model.CopybookModel;
 
 import java.util.Set;
 

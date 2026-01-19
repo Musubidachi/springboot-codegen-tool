@@ -1,7 +1,8 @@
 package com.mainframe.generator.codegen.dto.metadata;
 
 import com.mainframe.generator.codegen.DtoMetadata;
-import com.mainframe.generator.model.CopybookModel;
+import com.mainframe.generator.codegen.model.input.CopybookModel;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

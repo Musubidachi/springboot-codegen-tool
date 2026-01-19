@@ -1,9 +1,10 @@
 package com.mainframe.generator.integration;
 
-import com.mainframe.generator.codegen.GeneratorConfig;
 import com.mainframe.generator.codegen.GeneratorResult;
 import com.mainframe.generator.codegen.ProjectGenerator;
-import com.mainframe.generator.model.FramingMode;
+import com.mainframe.generator.codegen.model.core.context.GeneratorConfig;
+import com.mainframe.generator.codegen.model.input.FramingMode;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

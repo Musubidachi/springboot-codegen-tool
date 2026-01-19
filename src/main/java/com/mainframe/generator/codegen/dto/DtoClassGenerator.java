@@ -1,11 +1,11 @@
 package com.mainframe.generator.codegen.dto;
 
 import com.mainframe.generator.codegen.DtoMetadata;
+import com.mainframe.generator.codegen.model.input.CopybookModel;
+import com.mainframe.generator.codegen.model.input.MappingDocument;
 import com.mainframe.generator.codegen.util.FileWriteUtil;
 import com.mainframe.generator.codegen.util.ImportManager;
 import com.mainframe.generator.codegen.util.NamingUtil;
-import com.mainframe.generator.mapping.MappingDocument;
-import com.mainframe.generator.model.CopybookModel;
 import com.mainframe.generator.validation.ValidationConstraintGenerator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

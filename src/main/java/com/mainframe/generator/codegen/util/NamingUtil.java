@@ -1,10 +1,10 @@
 package com.mainframe.generator.codegen.util;
 
-import com.mainframe.generator.model.CopybookModel;
-
 import java.util.Arrays;
 import java.util.Set;
 import java.util.stream.Collectors;
+
+import com.mainframe.generator.codegen.model.input.CopybookModel;
 
 /**
  * Utility for consistent Java naming conventions.

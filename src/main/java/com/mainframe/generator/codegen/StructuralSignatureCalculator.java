@@ -6,12 +6,12 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.List;
 
-import com.mainframe.generator.model.CopybookModel;
-import com.mainframe.generator.model.CopybookNode;
-import com.mainframe.generator.model.Enum88Node;
-import com.mainframe.generator.model.FieldNode;
-import com.mainframe.generator.model.GroupNode;
-import com.mainframe.generator.model.PictureClause;
+import com.mainframe.generator.codegen.copybook.util.PictureClause;
+import com.mainframe.generator.codegen.model.input.CopybookModel;
+import com.mainframe.generator.codegen.model.input.CopybookNode;
+import com.mainframe.generator.codegen.model.input.Enum88Node;
+import com.mainframe.generator.codegen.model.input.FieldNode;
+import com.mainframe.generator.codegen.model.input.GroupNode;
 
 /**
  * Calculates a structural signature (hash) for a copybook's DTO structure. Two

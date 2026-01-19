@@ -1,5 +1,10 @@
 package com.mainframe.generator.parser;
 
+import com.mainframe.generator.codegen.model.input.CopybookModel;
+import com.mainframe.generator.codegen.model.input.Enum88Node;
+import com.mainframe.generator.codegen.model.input.FieldNode;
+import com.mainframe.generator.codegen.model.input.GroupNode;
+import com.mainframe.generator.codegen.model.input.UsageType;
 import com.mainframe.generator.model.*;
 import org.junit.jupiter.api.Test;
 
