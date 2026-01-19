@@ -17,11 +17,17 @@ import com.mainframe.generator.codegen.model.core.context.GeneratorConfig;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Mixin;
 
+/**
+ * Main CLI command for generating Spring Boot mainframe integration projects.
+ *
+ * This command parses COBOL copybooks and generates a complete Spring Boot
+ * project with DTOs, serializers, deserializers, Camel routes, and a REST API.
+ */
 @Command(
         name = "generate",
         mixinStandardHelpOptions = true,
-        version = "copybook-spring-camel-gen 1.0.0",
-        description = "Generates a Spring Boot + Apache Camel project for mainframe TCP communication based on COBOL copybooks."
+        version = "springboot-codegen-tool 1.0.0",
+        description = "Generates a Spring Boot project for mainframe integration based on COBOL copybooks."
 )
 public class GenerateCommand implements Callable<Integer> {
 
@@ -33,37 +39,24 @@ public class GenerateCommand implements Callable<Integer> {
     private final GenerateOptionsValidator validator = new GenerateOptionsValidator();
     private final GenerateResultsPrinter printer = new GenerateResultsPrinter();
 
+    /**
+     * Executes the generate command.
+     *
+     * @return 0 on success, 1 on failure
+     */
     @Override
     public Integer call() {
         try {
+            configureLogging();
             ValidatedGenerateOptions validated = validator.validate(options);
 
             printer.printBanner(options, validated);
 
-            GeneratorConfig config = GeneratorConfig.builder()
-                    .projectName(options.getProjectName())
-                    .copybookDir(options.getCopybookDir())
-                    .mappingDoc(options.getMappingDoc())
-                    .externalCopybookDirs(validated.getExternalCopybookDirs())
-                    .programId(options.getProgramId())
-                    .encoding(options.getEncoding())
-                    .tcpHost(options.getTcpHost())
-                    .tcpPort(options.getTcpPort())
-                    .tcpConnectTimeout(options.getTcpConnectTimeout())
-                    .tcpReadTimeout(options.getTcpReadTimeout())
-                    .framingMode(options.getFramingMode())
-                    .outputDir(validated.getNormalizedOutputDir())
-                    .force(options.isForce())
-                    .skipTests(options.isSkipTests())
-                    .requestCopybookDir(options.getRequestCopybookDir())
-                    .responseCopybookDir(options.getResponseCopybookDir())
-                    .sharedCopybookDir(options.getSharedCopybookDir())
-                    .requestRoot(options.getRequestRoot())
-                    .responseRoot(options.getResponseRoot())
-                    .inferInheritance(options.isInferInheritance())
-                    .testMode(options.isTestMode())
-                    .build();
+            if (options.isDryRun()) {
+                return handleDryRun(validated);
+            }
 
+            GeneratorConfig config = buildConfig(validated);
             GeneratorResult result = new ProjectGenerator(config).generate();
 
             if (!result.isSuccess()) {
@@ -75,12 +68,44 @@ public class GenerateCommand implements Callable<Integer> {
             return 0;
 
         } catch (OptionsValidationException e) {
-            // Validation errors are "expected"; keep stack traces out of the console.
             log.error("Invalid options:\n{}", e.getMessage());
             return 1;
         } catch (Exception e) {
             log.error("Generation failed with exception", e);
             return 1;
         }
+    }
+
+    private void configureLogging() {
+        if (options.isVerbose()) {
+            // Set root logger to DEBUG level
+            ch.qos.logback.classic.Logger root =
+                    (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME);
+            root.setLevel(ch.qos.logback.classic.Level.DEBUG);
+            log.debug("Verbose logging enabled");
+        }
+    }
+
+    private int handleDryRun(ValidatedGenerateOptions validated) {
+        log.info("");
+        log.info("=================================================");
+        log.info("DRY RUN - No files will be written");
+        log.info("=================================================");
+        log.info("Parsing and planning completed successfully.");
+        log.info("Project would be generated at: {}", validated.getProjectPath().toAbsolutePath());
+        return 0;
+    }
+
+    private GeneratorConfig buildConfig(ValidatedGenerateOptions validated) {
+        return GeneratorConfig.builder()
+                .serviceName(options.getServiceName())
+                .requestCopybookDir(options.getRequestCopybookDir())
+                .responseCopybookDir(options.getResponseCopybookDir())
+                .outputDir(validated.getNormalizedOutputDir())
+                .encoding(options.getEncoding())
+                .force(options.isForce())
+                .dryRun(options.isDryRun())
+                .verbose(options.isVerbose())
+                .build();
     }
 }
